@@ -45,7 +45,7 @@ defmodule NanoKVM.VideoTest do
     wait_for_input(video)
     assert :ok = Video.subscribe(video)
 
-    assert_receive {Video, {:input, %{width: 1920, height: 1080, fps: 60}}}
+    assert_receive {Video, {:input, %{width: 1920, height: 1080, fps: 60}}}, 1_000
     assert_receive {Video, {:h264, :key, "KEY"}}
     assert_receive {Video, {:h264, :delta, "DEL"}}
 

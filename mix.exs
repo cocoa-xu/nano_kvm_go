@@ -35,7 +35,7 @@ defmodule NanoKVM.MixProject do
 
   defp description do
     "The hardware of the Sipeed NanoKVM-Go for Elixir and Nerves: video capture " <>
-      "with H.264 and JPEG encoding, USB keyboard and mouse, USB mass storage."
+      "with H.264 and JPEG encoding, audio capture, USB keyboard and mouse, USB mass storage."
   end
 
   defp package do
@@ -69,7 +69,7 @@ defmodule NanoKVM.MixProject do
       extras: ["README.md", "CHANGELOG.md"],
       source_ref: "v#{@version}",
       groups_for_modules: [
-        Video: [NanoKVM.Video, NanoKVM.Video.Input],
+        "Video and audio": [NanoKVM.Video, NanoKVM.Video.Input, NanoKVM.Audio],
         "Keyboard and mouse": [NanoKVM.HID, NanoKVM.HID.Keymap, NanoKVM.HID.Report],
         USB: [NanoKVM.USB, NanoKVM.Storage]
       ]

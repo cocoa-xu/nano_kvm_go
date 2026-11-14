@@ -5,6 +5,7 @@
 First version, moved out of the NanoKVM-Go test application:
 
 * `NanoKVM.Video`: capture with H.264 and MJPEG
+* `NanoKVM.Audio`: HDMI/DisplayPort audio as PCM
 * `NanoKVM.USB`: keyboard, mouse and mass storage functions on the gadget
   the Nerves system sets up
 * `NanoKVM.HID`: keyboard and absolute mouse input

@@ -1,0 +1,90 @@
+defmodule NanoKVM.AudioTest do
+  # One fake program at a time, as in NanoKVM.VideoTest.
+  use ExUnit.Case, async: false
+
+  alias NanoKVM.Audio
+  alias NanoKVM.Audio.Protocol
+
+  @moduletag :tmp_dir
+
+  # Stands in for nano_kvm_audio: reports the format, sends two periods of
+  # PCM, then waits for the end of its stdin.
+  @fake """
+  #!/bin/sh
+  printf '\\000\\000\\000\\010\\002'
+  printf '48000 2'
+  printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
+  exec cat > /dev/null
+  """
+
+  setup %{tmp_dir: tmp_dir} do
+    program = Path.join(tmp_dir, "fake_audio")
+    File.write!(program, @fake)
+    File.chmod!(program, 0o755)
+    audio = start_supervised!({Audio, program: program, name: nil})
+    %{audio: audio}
+  end
+
+  test "captures while there are subscribers", %{audio: audio} do
+    assert Audio.format(audio) == nil
+    assert :ok = Audio.subscribe(audio)
+    kill_on_exit(audio)
+
+    # The first program of a run can take a while to start.
+    assert_receive {Audio, {:format, %{rate: 48_000, channels: 2}}}, 1_000
+    assert_receive {Audio, {:pcm, "ABCD"}}
+    assert_receive {Audio, {:pcm, "EFGH"}}
+    assert Audio.format(audio) == %{rate: 48_000, channels: 2}
+
+    assert :ok = Audio.unsubscribe(audio)
+    assert %{port: nil} = :sys.get_state(audio)
+    assert Audio.format(audio) == nil
+  end
+
+  test "a subscriber that goes away stops the capture", %{audio: audio} do
+    test = self()
+
+    subscriber =
+      spawn(fn ->
+        :ok = Audio.subscribe(audio)
+        send(test, :subscribed)
+
+        receive do
+          :leave -> :ok
+        end
+      end)
+
+    assert_receive :subscribed
+    kill_on_exit(audio)
+
+    ref = Process.monitor(subscriber)
+    send(subscriber, :leave)
+    assert_receive {:DOWN, ^ref, :process, _pid, _reason}
+
+    assert %{port: nil, subscribers: subscribers} = :sys.get_state(audio)
+    assert subscribers == %{}
+  end
+
+  test "stops without the port program", %{tmp_dir: tmp_dir} do
+    Process.flag(:trap_exit, true)
+    missing = Path.join(tmp_dir, "missing")
+    assert {:error, {:missing_program, ^missing}} = Audio.start_link(program: missing, name: nil)
+  end
+
+  test "decodes the packets of the port program" do
+    assert Protocol.decode(<<0, "open">>) == {:log, "open"}
+    assert Protocol.decode(<<1, 1, 0, 255, 255>>) == {:pcm, <<1, 0, 255, 255>>}
+    assert Protocol.decode(<<2, "44100 2">>) == {:format, %{rate: 44_100, channels: 2}}
+    assert Protocol.decode(<<2, "fast">>) == :unknown
+    assert Protocol.decode(<<7>>) == :unknown
+  end
+
+  # Whatever happens to its stdin, the program does not outlive the test.
+  defp kill_on_exit(audio) do
+    {:os_pid, os_pid} = Port.info(:sys.get_state(audio).port, :os_pid)
+
+    on_exit(fn ->
+      System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end)
+  end
+end

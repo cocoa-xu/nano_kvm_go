@@ -6,12 +6,14 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 * **Video** - capture of the HDMI/DisplayPort input (LT7911EXC bridge, up to
   3840x2160 at 30 fps), encoded by the hardware to H.264 for subscribers and
   to JPEG for an MJPEG stream
+* **Audio** - the audio of that input, as 16-bit stereo PCM
 * **Keyboard and mouse** - a boot keyboard and an absolute mouse for the
   target computer, over USB
 * **Mass storage** - disk and CD-ROM images for the target computer, over USB
 
 It drives the open mainline drivers of the Nerves system through the standard
-kernel interfaces (V4L2, configfs USB gadgets), with no vendor libraries.
+kernel interfaces (V4L2, ALSA, configfs USB gadgets), with no vendor
+libraries.
 
 ## Installation
 
@@ -23,9 +25,10 @@ def deps do
 end
 ```
 
-The video port program (`nano_kvm_video`, C) is built for the target by the
-Nerves toolchain. On hosts other than Linux it is not built, so the rest of
-the library still compiles and its tests run.
+The port programs (`nano_kvm_video` and `nano_kvm_audio`, C) are built for
+the target by the Nerves toolchain; the audio one links alsa-lib, which the
+NanoKVM-Go system has. On hosts other than Linux they are not built, so the
+rest of the library still compiles and its tests run.
 
 ## Usage
 
@@ -36,6 +39,7 @@ tree, `NanoKVM.USB` first:
 children = [
   {NanoKVM.USB, functions: [:keyboard, :mouse, :storage]},
   {NanoKVM.Video, mjpeg_port: 8088},
+  NanoKVM.Audio,
   NanoKVM.HID
 ]
 
@@ -56,6 +60,19 @@ end
 ```
 
 The MJPEG stream is at `http://<device>:8088/stream.mjpg`.
+
+### Audio
+
+```elixir
+:ok = NanoKVM.Audio.subscribe()
+
+receive do
+  {NanoKVM.Audio, {:pcm, samples}} -> samples
+end
+```
+
+Samples are interleaved signed 16-bit little endian, 48 kHz stereo by
+default, and only come while the source sends audio.
 
 ### Keyboard and mouse
 

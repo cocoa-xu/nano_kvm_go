@@ -4,6 +4,7 @@ defmodule NanoKVM do
 
     * `NanoKVM.Video` - capture of the HDMI/DisplayPort input, with the
       hardware H.264 and JPEG encoders
+    * `NanoKVM.Audio` - the audio of the HDMI/DisplayPort input, as PCM
     * `NanoKVM.USB` - the USB functions the target computer sees: keyboard,
       mouse, mass storage
     * `NanoKVM.HID` - keyboard and mouse input for the target computer
@@ -15,6 +16,7 @@ defmodule NanoKVM do
       children = [
         {NanoKVM.USB, functions: [:keyboard, :mouse, :storage]},
         NanoKVM.Video,
+        NanoKVM.Audio,
         NanoKVM.HID
       ]
 

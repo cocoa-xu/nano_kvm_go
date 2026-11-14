@@ -17,6 +17,10 @@ defmodule NanoKVM.USB do
   network goes down for a moment. With the functions already there nothing
   happens, so starting the process again is cheap.
 
+  When the functions cannot be set up at start, the process logs the error
+  and runs on, so that the rest of the application does not go down with
+  it; `functions/1` tells what the gadget has.
+
       children = [{NanoKVM.USB, functions: [:keyboard, :mouse, :storage]}]
 
   ## Options
@@ -102,15 +106,23 @@ defmodule NanoKVM.USB do
 
   @impl GenServer
   def init(opts) do
-    gadget = Keyword.get(opts, :gadget, @default_gadget)
-    # For tests: where the device controllers are listed.
-    udc_class = Keyword.get(opts, :udc_class, @udc_class)
-    state = %{gadget: gadget, udc_class: udc_class}
+    functions = Keyword.get(opts, :functions, [])
 
-    case apply_functions(state, Keyword.get(opts, :functions, [])) do
-      :ok -> {:ok, state}
-      {:error, reason} -> {:stop, reason}
+    with {:error, unknown} <- validate(functions) do
+      raise ArgumentError, "unknown USB functions: #{inspect(unknown)}"
     end
+
+    state = %{
+      gadget: Keyword.get(opts, :gadget, @default_gadget),
+      # For tests: where the device controllers are listed.
+      udc_class: Keyword.get(opts, :udc_class, @udc_class)
+    }
+
+    with {:error, reason} <- apply_functions(state, functions) do
+      Logger.error("nano_kvm: USB functions #{inspect(functions)} not set up: #{inspect(reason)}")
+    end
+
+    {:ok, state}
   end
 
   @impl GenServer

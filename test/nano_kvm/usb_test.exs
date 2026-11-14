@@ -57,18 +57,22 @@ defmodule NanoKVM.USBTest do
     assert File.exists?(Path.join(gadget, "configs/c.1/ncm.usb0"))
   end
 
-  test "refuses unknown functions and missing gadgets", %{tmp_dir: tmp_dir} = context do
-    pid =
-      start_supervised!(
-        {NanoKVM.USB, gadget: context.gadget, udc_class: context.udc_class, name: nil}
-      )
-
+  test "refuses unknown functions", %{gadget: gadget, udc_class: udc_class} do
+    pid = start_supervised!({NanoKVM.USB, gadget: gadget, udc_class: udc_class, name: nil})
     assert NanoKVM.USB.configure(pid, [:camera]) == {:error, {:unknown_functions, [:camera]}}
 
     Process.flag(:trap_exit, true)
-    missing = Path.join(tmp_dir, "missing")
 
-    assert {:error, {:no_gadget, ^missing}} =
-             NanoKVM.USB.start_link(functions: [:storage], gadget: missing, name: nil)
+    assert {:error, {%ArgumentError{}, _stack}} =
+             NanoKVM.USB.start_link(functions: [:camera], gadget: gadget, name: nil)
+  end
+
+  @tag capture_log: true
+  test "runs on without a gadget", %{tmp_dir: tmp_dir} do
+    missing = Path.join(tmp_dir, "missing")
+    pid = start_supervised!({NanoKVM.USB, functions: [:storage], gadget: missing, name: nil})
+
+    assert NanoKVM.USB.functions(pid) == []
+    assert NanoKVM.USB.configure(pid, [:storage]) == {:error, {:no_gadget, missing}}
   end
 end

@@ -10,23 +10,31 @@
  * "<rate> <channels>". The end of stdin stops the program; nothing else
  * comes in on it.
  *
- * The LT7911EXC drives the I2S clocks: without audio from the source no
- * samples arrive, and the program just waits.
+ * The LT7911EXC drives the I2S clocks at the source's own sample rate, which
+ * the rate asked for here does not change: the program measures the rate the
+ * samples arrive at and reports the format again when it is another one.
+ * Without audio from the source no samples arrive, and the program waits.
  */
 #include <alsa/asoundlib.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <math.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 enum { PKT_LOG, PKT_PCM, PKT_FORMAT };
 
 #define MAX_FDS 8
+/* The arrival rate is averaged over this long... */
+#define MEASURE_SECONDS 2.0
+/* ...and starts over after a pause in the audio. */
+#define MAX_GAP_SECONDS 0.25
 
 static void write_all(const void *data, size_t len)
 {
@@ -74,6 +82,68 @@ static void die(const char *what, int err)
 	exit(1);
 }
 
+static double now(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* The standard rate nearest to a measured one. */
+static unsigned int standard_rate(double measured)
+{
+	static const unsigned int rates[] = {
+		32000, 44100, 48000, 88200, 96000, 176400, 192000,
+	};
+	unsigned int best = rates[0];
+	size_t i;
+
+	for (i = 1; i < sizeof(rates) / sizeof(rates[0]); i++)
+		if (fabs(measured - rates[i]) < fabs(measured - best))
+			best = rates[i];
+	return best;
+}
+
+struct rate_meter {
+	double start;		/* of the window, 0 before the first samples */
+	double last;		/* the last samples */
+	unsigned long frames;	/* in the window, after its first read */
+};
+
+/*
+ * Counts frames as they arrive. Returns the standard rate they arrived at
+ * over the last window, 0 while a window is not complete yet.
+ */
+static unsigned int meter_update(struct rate_meter *m, unsigned long frames)
+{
+	double t = now();
+	unsigned int rate = 0;
+
+	if (!m->start || t - m->last > MAX_GAP_SECONDS) {
+		m->start = t;
+		m->frames = 0;
+	} else {
+		m->frames += frames;
+		if (t - m->start >= MEASURE_SECONDS) {
+			rate = standard_rate(m->frames / (t - m->start));
+			m->start = t;
+			m->frames = 0;
+		}
+	}
+	m->last = t;
+
+	return rate;
+}
+
+static void report_format(unsigned int rate, unsigned int channels)
+{
+	char format[32];
+
+	snprintf(format, sizeof(format), "%u %u", rate, channels);
+	packet(PKT_FORMAT, format, strlen(format));
+}
+
 static snd_pcm_t *open_capture(const char *name, unsigned int *rate, unsigned int channels,
 			       snd_pcm_uframes_t *period)
 {
@@ -108,7 +178,7 @@ int main(int argc, char **argv)
 	struct pollfd fds[MAX_FDS];
 	unsigned int rate, channels;
 	snd_pcm_uframes_t period;
-	char format[32];
+	struct rate_meter meter = { 0 };
 	int16_t *samples;
 	snd_pcm_t *pcm;
 	int npcm, err;
@@ -127,8 +197,7 @@ int main(int argc, char **argv)
 	samples = calloc(period * channels, sizeof(*samples));
 	if (!samples)
 		return 1;
-	snprintf(format, sizeof(format), "%u %u", rate, channels);
-	packet(PKT_FORMAT, format, strlen(format));
+	report_format(rate, channels);
 
 	fds[0].fd = STDIN_FILENO;
 	fds[0].events = POLLIN;
@@ -160,6 +229,7 @@ int main(int argc, char **argv)
 
 		for (;;) {
 			snd_pcm_sframes_t n = snd_pcm_readi(pcm, samples, period);
+			unsigned int measured;
 
 			if (n == -EAGAIN)
 				break;
@@ -171,6 +241,13 @@ int main(int argc, char **argv)
 				break;
 			}
 			packet(PKT_PCM, samples, n * channels * sizeof(*samples));
+
+			measured = meter_update(&meter, n);
+			if (measured && measured != rate) {
+				logline("samples arrive at %u Hz", measured);
+				rate = measured;
+				report_format(rate, channels);
+			}
 		}
 	}
 }

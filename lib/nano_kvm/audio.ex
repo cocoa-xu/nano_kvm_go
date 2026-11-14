@@ -11,8 +11,8 @@ defmodule NanoKVM.Audio do
     * `:name` - the name to register, `NanoKVM.Audio` by default
     * `:device` - the ALSA capture device, `"hw:CARD=LT7911EXC,DEV=0"` by
       default
-    * `:rate` - samples per second, 48000 by default. The bridge sends the
-      source's own rate, which most computers keep at 48 kHz.
+    * `:rate` - the sample rate to expect at first, 48000 by default, the
+      rate most computers send at
     * `:period_ms` - the audio in each message, 20 ms by default
 
   ## Messages
@@ -20,7 +20,10 @@ defmodule NanoKVM.Audio do
   Subscribers receive:
 
     * `{NanoKVM.Audio, {:format, %{rate: rate, channels: 2}}}` when the
-      capture starts, and when subscribing to a running one
+      capture starts, when subscribing to a running one, and when the
+      samples turn out to arrive at another rate. The bridge passes the
+      source's rate on: the port program measures it and snaps it to a
+      standard one (44.1 kHz, 48 kHz, ...) within a few seconds.
     * `{NanoKVM.Audio, {:pcm, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more

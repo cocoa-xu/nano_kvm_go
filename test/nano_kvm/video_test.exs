@@ -1,5 +1,7 @@
 defmodule NanoKVM.VideoTest do
-  use ExUnit.Case, async: true
+  # One fake program at a time: started together, they would hold each
+  # other's pipes open.
+  use ExUnit.Case, async: false
 
   alias NanoKVM.Video
 
@@ -10,7 +12,6 @@ defmodule NanoKVM.VideoTest do
   # stdin ends. Each command comes {:packet, 4} framed too, 5 bytes.
   @fake """
   #!/bin/sh
-  echo $$ > "$0.pid"
   printf '\\000\\000\\000\\015\\003'
   printf '1920x1080@60'
   while c=$(dd bs=5 count=1 2>/dev/null | tail -c 1) && [ -n "$c" ]; do
@@ -26,13 +27,17 @@ defmodule NanoKVM.VideoTest do
     File.write!(program, @fake)
     File.chmod!(program, 0o755)
 
-    # Whatever happens to its stdin, the program does not outlive the test.
-    on_exit(fn ->
-      with {:ok, pid} <- File.read(program <> ".pid"), do: System.cmd("kill", [String.trim(pid)])
-    end)
-
     devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
     video = start_supervised!({Video, program: program, devices: devices, name: nil})
+
+    # Whatever happens to its stdin, the program does not outlive the test.
+    _input = Video.input(video)
+    {:os_pid, os_pid} = Port.info(:sys.get_state(video).port, :os_pid)
+
+    on_exit(fn ->
+      System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end)
+
     %{video: video}
   end
 

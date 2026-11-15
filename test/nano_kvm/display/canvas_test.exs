@@ -35,6 +35,16 @@ defmodule NanoKVM.Display.CanvasTest do
     assert pixel(frame, 20, 4, 3) == 0
   end
 
+  test "turned upside down, the last pixel comes first" do
+    canvas = Canvas.new(3, 2) |> Canvas.rect(0, 0, 1, 1, @white)
+    upright = Canvas.render(canvas)
+    turned = Canvas.render(canvas, rotate: 180)
+
+    assert pixel(upright, 3, 0, 0) == @white
+    assert pixel(turned, 3, 2, 1) == @white
+    assert pixel(turned, 3, 0, 0) == 0
+  end
+
   test "characters past ASCII show as ?" do
     a = Canvas.new(8, 16) |> Canvas.text(0, 0, "é", @white) |> Canvas.render()
     b = Canvas.new(8, 16) |> Canvas.text(0, 0, "?", @white) |> Canvas.render()

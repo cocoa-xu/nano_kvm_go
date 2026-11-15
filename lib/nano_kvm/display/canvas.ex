@@ -84,15 +84,30 @@ defmodule NanoKVM.Display.Canvas do
   @doc """
   The picture as rows of little-endian RGB565 pixels, top to bottom, as a
   framebuffer takes them.
+
+  ## Options
+
+    * `:rotate` - 0 (the default) or 180 degrees, for a display mounted
+      upside down
   """
-  @spec render(t()) :: binary()
-  def render(%__MODULE__{} = canvas) do
+  @spec render(t(), keyword()) :: binary()
+  def render(%__MODULE__{} = canvas, opts \\ []) do
     items = Enum.reverse(canvas.items)
     blank = :binary.copy(<<canvas.background::little-16>>, canvas.width)
 
-    for y <- 0..(canvas.height - 1), into: <<>> do
-      Enum.reduce(items, blank, &paint(&1, &2, y, canvas.width))
+    rows =
+      for y <- 0..(canvas.height - 1)//1 do
+        Enum.reduce(items, blank, &paint(&1, &2, y, canvas.width))
+      end
+
+    case Keyword.get(opts, :rotate, 0) do
+      0 -> IO.iodata_to_binary(rows)
+      180 -> rows |> Enum.reverse() |> Enum.map(&reverse_pixels/1) |> IO.iodata_to_binary()
     end
+  end
+
+  defp reverse_pixels(row) do
+    for <<pixel::binary-size(2) <- row>>, reduce: [], do: (pixels -> [pixel | pixels])
   end
 
   defp paint({:rect, x, top, width, height, color}, row, y, row_width)

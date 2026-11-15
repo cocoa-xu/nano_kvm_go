@@ -11,6 +11,13 @@ defmodule NanoKVM.USB do
     * `:keyboard` - a boot keyboard, for `NanoKVM.HID`
     * `:mouse` - an absolute mouse, for `NanoKVM.HID`
     * `:storage` - a removable drive or CD-ROM drive, for `NanoKVM.Storage`
+    * `:microphone` - a microphone (48 kHz, mono), for `NanoKVM.Microphone`
+    * `:speaker` - a speaker (48 kHz, stereo), for `NanoKVM.Audio` with
+      `source: :usb`
+
+  The microphone and the speaker are the two directions of one USB Audio
+  Class 2 function, which the NanoKVM-Go system shows as the ALSA card
+  `UAC2Gadget`.
 
   Changing the functions disconnects the gadget and connects it again: the
   target computer sees the NanoKVM unplugged and plugged in, and the USB
@@ -37,13 +44,22 @@ defmodule NanoKVM.USB do
 
   @config "configs/c.1"
   @udc_class "/sys/class/udc"
-  @dirs %{keyboard: "hid.keyboard", mouse: "hid.mouse", storage: "mass_storage.disk"}
+  @dirs %{
+    keyboard: "hid.keyboard",
+    mouse: "hid.mouse",
+    storage: "mass_storage.disk",
+    microphone: "uac2.audio",
+    speaker: "uac2.audio"
+  }
   # The order they are added in: the keyboard comes before the mouse.
-  @order [:keyboard, :mouse, :storage]
+  @order [:keyboard, :mouse, :storage, :microphone, :speaker]
+  @audio [:microphone, :speaker]
   # SCSI INQUIRY: vendor (8), product (16), revision (4).
   @inquiry "NanoKVM Virtual Media   0100"
+  # Channel masks of the audio directions: the microphone is mono.
+  @channels %{microphone: "1", speaker: "3"}
 
-  @type function_name() :: :keyboard | :mouse | :storage
+  @type function_name() :: :keyboard | :mouse | :storage | :microphone | :speaker
 
   @type option() ::
           {:functions, [function_name()]} | {:name, GenServer.name()} | {:gadget, Path.t()}
@@ -147,6 +163,7 @@ defmodule NanoKVM.USB do
   defp change(state, present, wanted) do
     Logger.info("nano_kvm: USB functions #{inspect(wanted)}, reconnecting the gadget")
     udc = bound_udc(state.gadget)
+    {present, wanted} = {units(present), units(wanted)}
 
     with :ok <- unbind(state.gadget, udc),
          :ok <- each(present -- wanted, &remove(state.gadget, &1)),
@@ -155,20 +172,46 @@ defmodule NanoKVM.USB do
     end
   end
 
+  # The function directories: the microphone and the speaker share one, set
+  # up for the directions asked for. configfs only takes new settings for a
+  # function that is not in use, so other directions mean a new function.
+  defp units(functions) do
+    case Enum.filter(@audio, &(&1 in functions)) do
+      [] -> functions -- @audio
+      audio -> (functions -- @audio) ++ [{:audio, audio}]
+    end
+  end
+
   defp present(gadget) do
-    Enum.filter(@order, fn function ->
-      match?({:ok, _stat}, File.lstat(link(gadget, function)))
+    Enum.filter(@order, fn
+      function when function in @audio -> audio_direction?(gadget, function)
+      function -> match?({:ok, _stat}, File.lstat(link(gadget, function)))
     end)
   end
 
-  defp add(gadget, function) do
-    dir = function_dir(function, gadget: gadget)
+  defp audio_direction?(gadget, function) do
+    mask = if function == :microphone, do: "p_chmask", else: "c_chmask"
 
-    with :ok <- File.mkdir_p(dir),
-         :ok <- setup(dir, function) do
-      File.ln_s(dir, link(gadget, function))
+    with {:ok, _stat} <- File.lstat(link(gadget, function)),
+         {:ok, text} <- File.read(Path.join(function_dir(function, gadget: gadget), mask)),
+         {value, _rest} when value > 0 <- Integer.parse(text) do
+      true
+    else
+      _ -> false
     end
   end
+
+  defp add(gadget, unit) do
+    dir = function_dir(unit_function(unit), gadget: gadget)
+
+    with :ok <- File.mkdir_p(dir),
+         :ok <- setup(dir, unit) do
+      File.ln_s(dir, link(gadget, unit_function(unit)))
+    end
+  end
+
+  defp unit_function({:audio, [function | _rest]}), do: function
+  defp unit_function(function), do: function
 
   defp setup(dir, :keyboard), do: setup_hid(dir, Descriptor.keyboard())
   defp setup(dir, :mouse), do: setup_hid(dir, Descriptor.mouse())
@@ -182,6 +225,20 @@ defmodule NanoKVM.USB do
     end
   end
 
+  defp setup(dir, {:audio, directions}) do
+    mask = fn function -> if function in directions, do: @channels[function], else: "0" end
+
+    write_all(dir,
+      p_chmask: mask.(:microphone),
+      p_srate: "48000",
+      p_ssize: "2",
+      c_chmask: mask.(:speaker),
+      c_srate: "48000",
+      c_ssize: "2",
+      function_name: "NanoKVM-Go Audio"
+    )
+  end
+
   defp setup_hid(dir, descriptor) do
     write_all(dir,
       protocol: Integer.to_string(descriptor.protocol),
@@ -191,7 +248,9 @@ defmodule NanoKVM.USB do
     )
   end
 
-  defp remove(gadget, function) do
+  defp remove(gadget, unit) do
+    function = unit_function(unit)
+
     with :ok <- File.rm(link(gadget, function)) do
       File.rmdir(function_dir(function, gadget: gadget))
     end

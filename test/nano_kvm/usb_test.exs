@@ -57,6 +57,60 @@ defmodule NanoKVM.USBTest do
     assert File.exists?(Path.join(gadget, "configs/c.1/ncm.usb0"))
   end
 
+  test "sets up the microphone and the speaker as one audio function", %{
+    gadget: gadget,
+    udc_class: udc_class
+  } do
+    pid =
+      start_supervised!(
+        {NanoKVM.USB,
+         functions: [:speaker, :microphone], gadget: gadget, udc_class: udc_class, name: nil}
+      )
+
+    assert NanoKVM.USB.functions(pid) == [:microphone, :speaker]
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/p_chmask") == "1"
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_chmask") == "3"
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/p_srate") == "48000"
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_ssize") == "2"
+
+    assert File.read_link!(Path.join(gadget, "configs/c.1/uac2.audio")) ==
+             Path.join(gadget, "functions/uac2.audio")
+  end
+
+  test "a microphone alone leaves the speaker direction out", %{
+    gadget: gadget,
+    udc_class: udc_class
+  } do
+    pid =
+      start_supervised!(
+        {NanoKVM.USB, functions: [:microphone], gadget: gadget, udc_class: udc_class, name: nil}
+      )
+
+    assert NanoKVM.USB.functions(pid) == [:microphone]
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_chmask") == "0"
+  end
+
+  test "tells the audio directions from the function's channel masks", %{
+    gadget: gadget,
+    udc_class: udc_class
+  } do
+    dir = Path.join(gadget, "functions/uac2.audio")
+    File.mkdir_p!(dir)
+    File.ln_s!(dir, Path.join(gadget, "configs/c.1/uac2.audio"))
+    File.write!(Path.join(dir, "p_chmask"), "1\n")
+    File.write!(Path.join(dir, "c_chmask"), "0\n")
+    # A rebind would rewrite the controller's name.
+    File.write!(Path.join(gadget, "UDC"), "untouched")
+
+    pid =
+      start_supervised!(
+        {NanoKVM.USB, functions: [:microphone], gadget: gadget, udc_class: udc_class, name: nil}
+      )
+
+    assert NanoKVM.USB.functions(pid) == [:microphone]
+    assert FakeConfigfs.read(gadget, "UDC") == "untouched"
+  end
+
   test "refuses unknown functions", %{gadget: gadget, udc_class: udc_class} do
     pid = start_supervised!({NanoKVM.USB, gadget: gadget, udc_class: udc_class, name: nil})
     assert NanoKVM.USB.configure(pid, [:camera]) == {:error, {:unknown_functions, [:camera]}}

@@ -6,10 +6,13 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 * **Video** - capture of the HDMI/DisplayPort input (LT7911EXC bridge, up to
   3840x2160 at 30 fps), encoded by the hardware to H.264 for subscribers and
   to JPEG for an MJPEG stream
-* **Audio** - the audio of that input, as 16-bit stereo PCM
+* **Audio** - the audio of that input, as 16-bit stereo PCM, at the rate the
+  source sends
+* **EDID** - the EDID the input presents to the source, to read or replace
 * **Keyboard and mouse** - a boot keyboard and an absolute mouse for the
   target computer, over USB
 * **Mass storage** - disk and CD-ROM images for the target computer, over USB
+* **Temperature** - of the SoC, from its on-die sensor
 
 It drives the open mainline drivers of the Nerves system through the standard
 kernel interfaces (V4L2, ALSA, configfs USB gadgets), with no vendor
@@ -25,9 +28,9 @@ def deps do
 end
 ```
 
-The port programs (`nano_kvm_video` and `nano_kvm_audio`, C) are built for
-the target by the Nerves toolchain; the audio one links alsa-lib, which the
-NanoKVM-Go system has. On hosts other than Linux they are not built, so the
+The programs (`nano_kvm_video`, `nano_kvm_audio` and `nano_kvm_edid`, C) are
+built for the target by the Nerves toolchain; the audio one links alsa-lib,
+which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the
 rest of the library still compiles and its tests run.
 
 ## Usage
@@ -61,6 +64,14 @@ end
 
 The MJPEG stream is at `http://<device>:8088/stream.mjpg`.
 
+```elixir
+{:ok, edid} = NanoKVM.Video.edid()
+:ok = NanoKVM.Video.set_edid(other_edid)
+```
+
+The bridge keeps the EDID in its flash; the source reads a new one when it
+next connects.
+
 ### Audio
 
 ```elixir
@@ -71,8 +82,9 @@ receive do
 end
 ```
 
-Samples are interleaved signed 16-bit little endian, 48 kHz stereo by
-default, and only come while the source sends audio.
+Samples are interleaved signed 16-bit little endian stereo, at the rate in
+the latest `{NanoKVM.Audio, {:format, format}}` message, and only come while
+the source sends audio.
 
 ### Keyboard and mouse
 
@@ -91,6 +103,13 @@ pass them through.
 ```elixir
 NanoKVM.Storage.insert("/data/images/debian.iso")
 NanoKVM.Storage.eject()
+```
+
+### Temperature
+
+```elixir
+NanoKVM.temperature()
+#=> {:ok, 47.3}
 ```
 
 ## Changing USB functions

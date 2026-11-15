@@ -9,23 +9,71 @@ defmodule NanoKVM.HID.Descriptor do
           report_desc: binary()
         }
 
-  # Boot keyboard: modifiers, reserved, 6 keys; LED output report.
-  @keyboard <<0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00,
-              0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x03,
-              0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, 0x95, 0x01,
-              0x75, 0x03, 0x91, 0x03, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
-              0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0>>
+  @type pointer_mode() :: :absolute | :stylus | :touch
 
-  # Absolute mouse: 3 buttons, X and Y 0..32767, relative wheel.
-  @mouse <<0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01,
-           0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01,
-           0x75, 0x05, 0x81, 0x03, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x00, 0x26, 0xFF,
-           0x7F, 0x75, 0x10, 0x95, 0x02, 0x81, 0x02, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75,
-           0x08, 0x95, 0x01, 0x81, 0x06, 0xC0, 0xC0>>
+  # Boot keyboard: modifiers, reserved, 6 keys of usages 0..0xE7 (the
+  # logical maximum in two bytes: one would read as negative); LED output.
+  @keyboard Base.decode16!(
+              "05010906A101050719E029E715002501750195088102950175088103" <>
+                "95057501050819012905910295017503910395067508150026E700" <>
+                "0507190029E78100C0"
+            )
+
+  # Buttons 1 to 5 (left, right, middle, back, forward) and padding, then
+  # the axes, the wheel and the horizontal wheel (AC Pan).
+  @buttons "05091901290515002501950575018102950175038103"
+  @pan "050C0A38021581257F750895018106"
+
+  # Relative boot mouse: X, Y and the wheel from -127 to 127.
+  @relative_mouse Base.decode16!(
+                    "05010902A1010901A100" <>
+                      @buttons <>
+                      "05010930093109381581257F750895038106" <> @pan <> "C0C0"
+                  )
+
+  # Absolute mouse: X and Y from 0 to 32767, a relative wheel.
+  @mouse Base.decode16!(
+           "05010902A1010901A100" <>
+             @buttons <>
+             "050109300931150026FF7F751095028102" <>
+             "0938158125" <> "7F750895018106" <> @pan <> "C0C0"
+         )
+
+  # Pen (stock firmware's "digitizer-stylus", for Android and iPadOS):
+  # report 2, tip and in range, X and Y from 0 to 32767, pressure.
+  @stylus Base.decode16!(
+            "050D0905A10185020920A100050D0942093215002501750195028102" <>
+              "75069501810305010930093116000026FF7F751095028102" <>
+              "050D0930150026FF00750895018102C0C0"
+          )
+
+  # Touch screen (stock firmware's "touch-screen"): report 3 with ten
+  # contacts (tip, confidence, id, X, Y) and the contact count; feature
+  # report 4, the most contacts.
+  @contact "050D0922A10209420947150025017501950281027506950181037508" <>
+             "250A0951950181020501150026FF7F751095010930810209318102C0"
+  @touch Base.decode16!(
+           "050D0904A1018503" <>
+             String.duplicate(@contact, 10) <>
+             "050D1500250A750895010954810285040955B102C0"
+         )
 
   @spec keyboard() :: t()
   def keyboard, do: %{protocol: 1, subclass: 1, report_length: 8, report_desc: @keyboard}
 
-  @spec mouse() :: t()
-  def mouse, do: %{protocol: 2, subclass: 0, report_length: 6, report_desc: @mouse}
+  @spec relative_mouse() :: t()
+  def relative_mouse,
+    do: %{protocol: 2, subclass: 1, report_length: 5, report_desc: @relative_mouse}
+
+  @spec mouse(pointer_mode()) :: t()
+  def mouse(:absolute), do: %{protocol: 2, subclass: 0, report_length: 7, report_desc: @mouse}
+  def mouse(:stylus), do: %{protocol: 0, subclass: 0, report_length: 7, report_desc: @stylus}
+  def mouse(:touch), do: %{protocol: 0, subclass: 0, report_length: 62, report_desc: @touch}
+
+  @doc "The pointer mode of a report descriptor, `nil` for another one."
+  @spec pointer_mode(binary()) :: pointer_mode() | nil
+  def pointer_mode(@mouse), do: :absolute
+  def pointer_mode(@stylus), do: :stylus
+  def pointer_mode(@touch), do: :touch
+  def pointer_mode(_report_desc), do: nil
 end

@@ -5,7 +5,7 @@ defmodule NanoKVM.HID.Keymap do
   Keys are named by their physical position, as the W3C UI Events
   `KeyboardEvent.code` values that browsers send ("KeyA", "Digit1",
   "ShiftLeft", "ArrowUp"): the target computer applies its own layout.
-  The boot keyboard has the usages 0x04..0x65 and eight modifier keys.
+  The keyboard has the usages 0x04..0xDD and eight modifier keys.
   """
 
   @typedoc "A `KeyboardEvent.code` value."
@@ -29,7 +29,8 @@ defmodule NanoKVM.HID.Keymap do
   @digits for {c, i} <- Enum.with_index(?1..?9),
               into: %{"Digit0" => 0x27},
               do: {"Digit" <> <<c>>, 0x1E + i}
-  @fkeys for i <- 1..12, into: %{}, do: {"F#{i}", 0x39 + i}
+  @fkeys for(i <- 1..12, into: %{}, do: {"F#{i}", 0x39 + i})
+         |> Map.merge(for i <- 13..24, into: %{}, do: {"F#{i}", 0x5B + i})
   @numpad for i <- 1..9, into: %{"Numpad0" => 0x62}, do: {"Numpad#{i}", 0x58 + i}
 
   @usages %{
@@ -71,7 +72,36 @@ defmodule NanoKVM.HID.Keymap do
             "NumpadEnter" => 0x58,
             "NumpadDecimal" => 0x63,
             "IntlBackslash" => 0x64,
-            "ContextMenu" => 0x65
+            "ContextMenu" => 0x65,
+            "Power" => 0x66,
+            "NumpadEqual" => 0x67,
+            "Help" => 0x75,
+            "Select" => 0x77,
+            "Again" => 0x79,
+            "Undo" => 0x7A,
+            "Cut" => 0x7B,
+            "Copy" => 0x7C,
+            "Paste" => 0x7D,
+            "Find" => 0x7E,
+            "AudioVolumeMute" => 0x7F,
+            "AudioVolumeUp" => 0x80,
+            "AudioVolumeDown" => 0x81,
+            "NumpadComma" => 0x85,
+            "IntlRo" => 0x87,
+            "KanaMode" => 0x88,
+            "IntlYen" => 0x89,
+            "Convert" => 0x8A,
+            "NonConvert" => 0x8B,
+            "Lang1" => 0x90,
+            "Lang2" => 0x91,
+            "Lang3" => 0x92,
+            "Lang4" => 0x93,
+            "Lang5" => 0x94,
+            "NumpadParenLeft" => 0xB6,
+            "NumpadParenRight" => 0xB7,
+            "NumpadBackspace" => 0xBB,
+            "NumpadClear" => 0xD8,
+            "NumpadClearEntry" => 0xD9
           }
           |> Map.merge(@letters)
           |> Map.merge(@digits)
@@ -90,13 +120,13 @@ defmodule NanoKVM.HID.Keymap do
   def modifier(code), do: Map.get(@modifiers, code)
 
   @doc """
-  The HID usage of any other key, `nil` when the boot keyboard has none.
+  The HID usage of any other key, `nil` when the keyboard has none.
 
       iex> NanoKVM.HID.Keymap.usage("KeyA")
       0x04
       iex> NanoKVM.HID.Keymap.usage("Enter")
       0x28
   """
-  @spec usage(code()) :: 0x04..0x65 | nil
+  @spec usage(code()) :: 0x04..0xDD | nil
   def usage(code), do: Map.get(@usages, code)
 end

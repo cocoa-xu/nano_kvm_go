@@ -14,6 +14,16 @@ defmodule NanoKVM.HID.KeymapTest do
     assert Keymap.usage("ContextMenu") == 0x65
   end
 
+  test "maps the keys past the boot keyboard's" do
+    assert Keymap.usage("F13") == 0x68
+    assert Keymap.usage("F24") == 0x73
+    assert Keymap.usage("NumpadEqual") == 0x67
+    assert Keymap.usage("IntlRo") == 0x87
+    assert Keymap.usage("IntlYen") == 0x89
+    assert Keymap.usage("Lang1") == 0x90
+    assert Keymap.usage("Lang2") == 0x91
+  end
+
   test "knows the eight modifiers and nothing else as one" do
     bits =
       for side <- ["Left", "Right"],

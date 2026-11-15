@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* `NanoKVM.Expansion`: the two lines of the auxiliary USB-C port as a
+  UART, GPIOs, PWM outputs or an I2C bus, through the NanoKVM-Go system's
+  `nanokvm-go-expansion` driver; the mode is kept in the U-Boot environment,
+  GPIO edges come as messages. Needs `circuits_gpio`
 * The USB network's MAC addresses: `NanoKVM.USB.network/1` tells them and
   those by default (`NanoKVM.USB.default_network_addresses/1`, from the
   serial number, as the NanoKVM-Go system gives them at boot);

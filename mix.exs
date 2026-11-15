@@ -36,7 +36,7 @@ defmodule NanoKVM.MixProject do
   defp description do
     "The hardware of the Sipeed NanoKVM-Go for Elixir and Nerves: video capture " <>
       "with H.264 and JPEG encoding, audio capture, USB keyboard and mouse, USB mass storage, " <>
-      "the LCD, and the device's own parts and metrics."
+      "the LCD, the auxiliary port's expansion lines, and the device's own parts and metrics."
   end
 
   defp package do
@@ -58,6 +58,7 @@ defmodule NanoKVM.MixProject do
   defp deps do
     [
       {:elixir_make, "~> 0.9", runtime: false},
+      {:circuits_gpio, "~> 2.3"},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false},
       {:dialyxir, "~> 1.4", only: :test, runtime: false},
       {:credo, "~> 1.7", only: :test, runtime: false}
@@ -86,7 +87,7 @@ defmodule NanoKVM.MixProject do
           NanoKVM.Touch,
           NanoKVM.Button
         ],
-        "The device": [NanoKVM.Hardware, NanoKVM.Metrics]
+        "The device": [NanoKVM.Hardware, NanoKVM.Metrics, NanoKVM.Expansion]
       ]
     ]
   end

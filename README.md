@@ -20,6 +20,8 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   stay the same from boot to boot and that you can choose
 * **LCD, touch panel, button** - pictures and text on the 240 × 284 display,
   its backlight, touches, and the BOOT button
+* **Expansion lines** - the two lines of the auxiliary USB-C port, off until
+  you make them a UART, GPIOs, PWM outputs or an I2C bus
 * **Temperature** - of the SoC, from its on-die sensor
 * **The device itself** - its board, parts and drivers, microSD card and
   partitions, and what it is doing each second: CPU, memory, temperature,
@@ -233,6 +235,30 @@ NanoKVM.USB.network()
 :ok = NanoKVM.USB.set_network_addresses(host_address: "02:12:34:56:78:9a")
 :ok = NanoKVM.USB.set_network_addresses(host_address: :default)
 ```
+
+## The expansion lines
+
+The auxiliary USB-C port, the one with the lightning icon, carries two of
+the SoC's pads besides power; Sipeed's Finger Robot is a servo on them.
+They are inputs pulled down until you choose what they are, and the choice
+is kept for the next boots:
+
+```elixir
+NanoKVM.Expansion.info()
+#=> {:ok, %{mode: :off, modes: [:off, :uart, :gpio, :pwm, :pwm_gpio, :gpio_pwm, :i2c], ...}}
+
+# A servo on line 0 at 50 Hz, and line 1 as an input whose edges come as messages.
+:ok = NanoKVM.Expansion.set_mode(:pwm_gpio)
+:ok = NanoKVM.Expansion.set_pwm(0, 20_000_000, 1_500_000)
+:ok = NanoKVM.Expansion.subscribe()
+NanoKVM.Expansion.read(1)
+#=> {:ok, 0}
+```
+
+In the `:uart` mode the lines are `"ttyS3"` for `Circuits.UART`, and in the
+`:i2c` mode `"i2c-2"` for `Circuits.I2C`. Which USB-C contacts carry the
+lines, and at what voltage (most likely 3.3 V), is not known yet: measure
+before connecting anything but the Finger Robot.
 
 ## Changing USB functions
 

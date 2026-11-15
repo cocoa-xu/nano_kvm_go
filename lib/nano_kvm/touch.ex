@@ -20,12 +20,12 @@ defmodule NanoKVM.Touch do
   use GenServer
   require Logger
 
-  @input_class "/sys/class/input"
+  alias NanoKVM.Input
+
   @driver_name "Hynitron CST816x Series Touchscreen"
   @retry_delay 2_000
 
-  # struct input_event on a 32-bit kernel, and the codes used here.
-  @event_size 16
+  # The codes of struct input_event used here.
   @ev_syn 0
   @ev_key 1
   @ev_abs 3
@@ -90,7 +90,7 @@ defmodule NanoKVM.Touch do
   @impl GenServer
   def handle_info({:events, data}, state) do
     {:noreply,
-     for(<<event::binary-size(@event_size) <- data>>,
+     for(<<event::binary-size(16) <- data>>,
        reduce: state,
        do: (e -> handle_event(e, event))
      )}
@@ -151,50 +151,7 @@ defmodule NanoKVM.Touch do
     state
   end
 
-  defp start_reader(state) do
-    owner = self()
-    device = state.device
-    %{state | reader: spawn_link(fn -> read_events(owner, device) end)}
-  end
+  defp start_reader(state), do: %{state | reader: Input.start_reader(self(), state.device)}
 
-  # Raw files block only their own process: reading waits here.
-  defp read_events(owner, device) do
-    case File.open(device, [:read, :raw, :binary]) do
-      {:ok, file} -> read_loop(owner, file)
-      {:error, reason} -> exit(reason)
-    end
-  end
-
-  defp read_loop(owner, file) do
-    case :file.read(file, @event_size * 16) do
-      {:ok, data} ->
-        send(owner, {:events, data})
-        read_loop(owner, file)
-
-      :eof ->
-        exit(:eof)
-
-      {:error, reason} ->
-        exit(reason)
-    end
-  end
-
-  defp find_device do
-    case File.ls(@input_class) do
-      {:ok, names} ->
-        names
-        |> Enum.filter(&String.starts_with?(&1, "event"))
-        |> Enum.find_value(&touch_device/1)
-
-      {:error, _reason} ->
-        nil
-    end
-  end
-
-  defp touch_device(event) do
-    case File.read(Path.join([@input_class, event, "device", "name"])) do
-      {:ok, @driver_name <> _} -> Path.join("/dev/input", event)
-      _other -> nil
-    end
-  end
+  defp find_device, do: Input.find(@driver_name)
 end

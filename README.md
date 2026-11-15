@@ -16,6 +16,8 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   pen or a ten-finger touch screen) and a relative boot mouse for the target
   computer, over USB, waking it from sleep
 * **Mass storage** - disk and CD-ROM images for the target computer, over USB
+* **LCD and touch panel** - pictures and text on the 240 × 284 display, its
+  backlight, and touches
 * **Temperature** - of the SoC, from its on-die sensor
 
 It drives the open mainline drivers of the Nerves system through the standard
@@ -152,6 +154,25 @@ sleeps.
 NanoKVM.Storage.insert("/data/images/debian.iso")
 NanoKVM.Storage.eject()
 ```
+
+### LCD and touch panel
+
+```elixir
+alias NanoKVM.Display.Canvas
+
+children = [NanoKVM.Display, NanoKVM.Touch]
+
+Canvas.new(240, 284, Canvas.rgb(0, 0, 0))
+|> Canvas.rect(0, 0, 240, 40, Canvas.rgb(0, 80, 160))
+|> Canvas.text(8, 4, "NanoKVM-Go", Canvas.rgb(255, 255, 255), scale: 2)
+|> NanoKVM.Display.show()
+
+:ok = NanoKVM.Touch.subscribe()
+receive do: ({NanoKVM.Touch, {:down, x, y}} -> {x, y})
+```
+
+The font is Spleen 8 × 16 by Frederic Cambus (BSD-2-Clause, notice in
+`lib/nano_kvm/display/font.ex`).
 
 ### Temperature
 

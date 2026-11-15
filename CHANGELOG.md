@@ -30,6 +30,8 @@
 * The keyboard has the usages up to 0xDD: F13 to F24, the international and
   language keys, the editing keys
 * Input wakes a target that sleeps
+* `NanoKVM.Display` and `NanoKVM.Display.Canvas`: pictures and text on the
+  LCD, its backlight; `NanoKVM.Touch`: its touch panel
 
 ## v0.1.0
 

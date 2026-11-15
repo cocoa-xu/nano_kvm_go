@@ -167,11 +167,10 @@ Canvas.new(240, 284, Canvas.rgb(0, 0, 0))
 |> Canvas.text(8, 4, "NanoKVM-Go", Canvas.rgb(255, 255, 255), scale: 2)
 |> NanoKVM.Display.show()
 
-# Brightness on a lightness curve, on the kernel's driver at 2.16 kHz...
+# Brightness on a lightness curve; the PWM at 25 kHz or at a frequency of your own
 NanoKVM.Backlight.set_brightness(60)
-# ...or on the PWM at a frequency and duty cycle of your own
-NanoKVM.Backlight.set_pwm(frequency: 25_000, duty: 0.3)
-NanoKVM.Backlight.release()
+NanoKVM.Backlight.set_frequency(100_000)
+NanoKVM.Backlight.set_frequency(:default)
 
 :ok = NanoKVM.Touch.subscribe()
 receive do: ({NanoKVM.Touch, {:down, x, y}} -> {x, y})

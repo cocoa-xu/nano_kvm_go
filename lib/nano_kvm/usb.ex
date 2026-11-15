@@ -238,17 +238,26 @@ defmodule NanoKVM.USB do
   defp setup(dir, {:audio, directions}) do
     mask = fn function -> if function in directions, do: @channels[function], else: "0" end
 
-    write_all(dir,
-      p_chmask: mask.(:microphone),
-      p_srate: "48000",
-      p_ssize: "2",
-      c_chmask: mask.(:speaker),
-      c_srate: "48000",
-      c_ssize: "2",
-      # No feedback endpoint: the speaker follows the computer's clock.
-      c_sync: "adaptive",
-      function_name: "NanoKVM-Go Audio"
-    )
+    with :ok <-
+           write_all(dir,
+             p_chmask: mask.(:microphone),
+             p_srate: "48000",
+             p_ssize: "2",
+             c_chmask: mask.(:speaker),
+             c_srate: "48000",
+             c_ssize: "2",
+             # No feedback endpoint: the speaker follows the computer's clock.
+             c_sync: "adaptive"
+           ) do
+      # The names the computer shows, where the kernel takes them.
+      write_existing(dir,
+        function_name: "NanoKVM-Go Audio",
+        c_alt0_name: "NanoKVM-Go Speaker",
+        c_alt1_name: "NanoKVM-Go Speaker",
+        p_alt0_name: "NanoKVM-Go Microphone",
+        p_alt1_name: "NanoKVM-Go Microphone"
+      )
+    end
   end
 
   defp setup_hid(dir, descriptor) do
@@ -293,6 +302,12 @@ defmodule NanoKVM.USB do
     each(attributes, fn {name, value} ->
       File.write(Path.join(dir, Atom.to_string(name)), value)
     end)
+  end
+
+  defp write_existing(dir, attributes) do
+    attributes
+    |> Enum.filter(fn {name, _value} -> File.exists?(Path.join(dir, Atom.to_string(name))) end)
+    |> then(&write_all(dir, &1))
   end
 
   defp each(items, fun) do

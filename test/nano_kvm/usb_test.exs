@@ -78,6 +78,23 @@ defmodule NanoKVM.USBTest do
              Path.join(gadget, "functions/uac2.audio")
   end
 
+  test "names the audio directions where the kernel takes names", %{
+    gadget: gadget,
+    udc_class: udc_class
+  } do
+    # A kernel with the attribute; configfs makes it with the function.
+    dir = Path.join(gadget, "functions/uac2.audio")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "c_alt0_name"), "Playback Inactive\n")
+
+    start_supervised!(
+      {NanoKVM.USB, functions: [:speaker], gadget: gadget, udc_class: udc_class, name: nil}
+    )
+
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_alt0_name") == "NanoKVM-Go Speaker"
+    refute File.exists?(Path.join(dir, "p_alt0_name"))
+  end
+
   test "a microphone alone leaves the speaker direction out", %{
     gadget: gadget,
     udc_class: udc_class

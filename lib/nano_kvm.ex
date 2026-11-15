@@ -21,5 +21,16 @@ defmodule NanoKVM do
       ]
 
       Supervisor.start_link(children, strategy: :one_for_one)
+
+  The input's EDID and the SoC temperature need no process:
+  `NanoKVM.Video.edid/0` and `temperature/0`.
   """
+
+  @doc """
+  The temperature of the SoC in degrees Celsius, from its on-die sensor.
+
+  The Nerves system shuts the device down at 120 °C.
+  """
+  @spec temperature() :: {:ok, float()} | {:error, term()}
+  def temperature, do: NanoKVM.Thermal.temperature()
 end

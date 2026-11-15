@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* The USB network's MAC addresses: `NanoKVM.USB.network/1` tells them and
+  those by default (`NanoKVM.USB.default_network_addresses/1`, from the
+  serial number, as the NanoKVM-Go system gives them at boot);
+  `NanoKVM.USB.set_network_addresses/2` changes them at once and keeps them
+  in the U-Boot environment for the next boots;
+  `NanoKVM.USB.validate_network_addresses/2` checks them
 * `NanoKVM.Video.edid/0` and `NanoKVM.Video.set_edid/1`: the EDID of the
   input, kept in the bridge's flash; `NanoKVM.EDID.decode/1` for its name and
   modes

@@ -52,6 +52,17 @@ defmodule NanoKVM.USB do
          functions: [:keyboard, :mouse, {:microphone, channels: 1, rates: [44_100, 48_000]}]}
       ]
 
+  ## The network
+
+  The network function has two MAC addresses: the NanoKVM's, of its
+  interface `usb0`, and the target computer's, of the network adapter the
+  computer sees. The NanoKVM-Go system gives it the same ones at each boot,
+  so that the computer keeps one network interface for the NanoKVM: those
+  in the U-Boot environment's `usbnet_devaddr` and `usbnet_hostaddr`, else
+  addresses made from the serial number (`default_network_addresses/1`).
+  `network/1` tells them; `set_network_addresses/2` changes them at once
+  and keeps them for the next boots.
+
   ## Options
 
     * `:functions` - the functions to have, none by default
@@ -118,6 +129,12 @@ defmodule NanoKVM.USB do
   # The largest packets the USB controller (DWC3) takes: its smallest
   # transmit FIFO holds 832 bytes of one, and the receive FIFO three of 682.
   @max_packet %{microphone: 832, speaker: 682}
+  # The network function the NanoKVM-Go system sets up, and the U-Boot
+  # variables it takes the addresses from at boot (U-Boot's own names).
+  @ncm "ncm.usb0"
+  @address_variables %{device_address: "usbnet_devaddr", host_address: "usbnet_hostaddr"}
+  # The network function's settings that a new one takes over.
+  @ncm_kept [:qmult, :max_segment_size]
 
   @type function_name() ::
           :keyboard | :mouse | :relative_mouse | :storage | :microphone | :speaker
@@ -151,6 +168,25 @@ defmodule NanoKVM.USB do
           rates: [pos_integer(), ...],
           sample_bits: 16 | 24 | 32
         }
+
+  @typedoc "A MAC address, such as `\"02:12:34:56:78:9a\"`."
+  @type mac_address() :: String.t()
+
+  @type network_addresses() :: %{device_address: mac_address(), host_address: mac_address()}
+
+  @typedoc "The USB network, see `network/1`."
+  @type network() :: %{
+          interface: String.t() | nil,
+          device_address: mac_address(),
+          host_address: mac_address(),
+          default_addresses: network_addresses() | nil
+        }
+
+  @typedoc "What `set_network_addresses/2` takes."
+  @type network_setting() ::
+          {:device_address, mac_address() | :default}
+          | {:host_address, mac_address() | :default}
+          | {:persist, boolean()}
 
   @type option() ::
           {:functions, [function_spec()]} | {:name, GenServer.name()} | {:gadget, Path.t()}
@@ -243,6 +279,81 @@ defmodule NanoKVM.USB do
   end
 
   @doc """
+  The USB network: the NanoKVM's interface and its address, the address of
+  the target computer's end, and the addresses both have by default.
+
+  ```
+  NanoKVM.USB.network()
+  #=> {:ok,
+  #=>  %{
+  #=>    interface: "usb0",
+  #=>    device_address: "ea:52:ab:b6:67:a7",
+  #=>    host_address: "02:12:34:56:78:9a",
+  #=>    default_addresses: %{device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d"}
+  #=>  }}
+  ```
+
+  The interface is `nil` before the gadget is first bound, and the default
+  addresses `nil` without a serial number.
+  """
+  @spec network(GenServer.server()) :: {:ok, network()} | {:error, term()}
+  def network(server \\ __MODULE__), do: GenServer.call(server, :network)
+
+  @doc """
+  Gives the USB network other addresses, MAC addresses or `:default`:
+
+    * `:device_address` - the NanoKVM's
+    * `:host_address` - the target computer's
+
+  One left out stays as it is. The gadget connects again, as when the
+  functions change, and the NanoKVM's interface goes away and comes back
+  with its address. The NanoKVM-Go system gives the network the same
+  addresses at the next boots, from the U-Boot environment
+  (`Nerves.Runtime.KV`), unless `persist: false`.
+
+  ```
+  NanoKVM.USB.set_network_addresses(host_address: "02:12:34:56:78:9a")
+  NanoKVM.USB.set_network_addresses(device_address: :default, host_address: :default)
+  ```
+
+  Refused: an address that is not one (`{:invalid_address, key, value}`)
+  or is a multicast address (`{:multicast_address, key, value}`), and the
+  same address at both ends (`:same_addresses`).
+  """
+  @spec set_network_addresses(GenServer.server(), [network_setting()]) :: :ok | {:error, term()}
+  def set_network_addresses(server \\ __MODULE__, settings) when is_list(settings) do
+    GenServer.call(server, {:set_network_addresses, settings}, 15_000)
+  end
+
+  @doc """
+  Checks addresses without setting them: whether `set_network_addresses/2`
+  would take them.
+  """
+  @spec validate_network_addresses(GenServer.server(), [network_setting()]) ::
+          :ok | {:error, term()}
+  def validate_network_addresses(server \\ __MODULE__, settings) when is_list(settings) do
+    GenServer.call(server, {:validate_network_addresses, settings})
+  end
+
+  @doc """
+  The addresses the NanoKVM-Go system gives the USB network when the U-Boot
+  environment has none: the first six bytes of the SHA-256 of the serial
+  number (`boardid`'s) for the NanoKVM's end and the next six for the
+  computer's, as locally administered unicast addresses.
+
+      iex> NanoKVM.USB.default_network_addresses("6a1a78455040f186")
+      %{device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d"}
+  """
+  @spec default_network_addresses(String.t()) :: network_addresses()
+  def default_network_addresses(serial_number) when is_binary(serial_number) do
+    <<device::binary-6, host::binary-6, _rest::binary>> = :crypto.hash(:sha256, serial_number)
+    %{device_address: local_address(device), host_address: local_address(host)}
+  end
+
+  defp local_address(<<first, rest::binary-5>>),
+    do: format_address(<<(first &&& 0xFC) ||| 0x02, rest::binary>>)
+
+  @doc """
   The configfs directory of the gadget the NanoKVM-Go system sets up.
   """
   @spec default_gadget() :: Path.t()
@@ -283,10 +394,17 @@ defmodule NanoKVM.USB do
       raise ArgumentError, "invalid USB functions: #{inspect(reason)}"
     end
 
+    serial_number = Keyword.get_lazy(opts, :serial_number, &serial_number/0)
+
     state = %{
       gadget: Keyword.get(opts, :gadget, @default_gadget),
-      # For tests: where the device controllers are listed.
-      udc_class: Keyword.get(opts, :udc_class, @udc_class)
+      default_addresses: serial_number && default_network_addresses(serial_number),
+      # For tests: where the device controllers are listed, where the
+      # addresses are kept, and how a function goes (configfs takes its
+      # attributes with it, a plain directory does not).
+      udc_class: Keyword.get(opts, :udc_class, @udc_class),
+      kv: Keyword.get(opts, :kv, Nerves.Runtime.KV),
+      rmdir: Keyword.get(opts, :rmdir, &File.rmdir/1)
     }
 
     with {:error, reason} <- apply_functions(state, functions) do
@@ -314,6 +432,247 @@ defmodule NanoKVM.USB do
        into: %{},
        do: {function, format}
      ), state}
+  end
+
+  def handle_call(:network, _from, state), do: {:reply, read_network(state), state}
+
+  def handle_call({:validate_network_addresses, settings}, _from, state) do
+    reply =
+      with {:ok, network} <- read_network(state),
+           {:ok, _wanted} <- wanted_addresses(settings, network),
+           do: :ok
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:set_network_addresses, settings}, _from, state) do
+    reply =
+      with {:ok, network} <- read_network(state),
+           {:ok, wanted} <- wanted_addresses(settings, network),
+           :ok <- readdress(state, Map.take(network, [:device_address, :host_address]), wanted) do
+        if Keyword.get(settings, :persist, true), do: persist(state, settings, wanted), else: :ok
+      end
+
+    {:reply, reply, state}
+  end
+
+  # The serial number the NanoKVM-Go system makes the default addresses
+  # from, as its shell takes it: without the newlines at the end.
+  defp serial_number do
+    with {id, 0} <- System.cmd("boardid", []),
+         id when id != "" <- String.trim_trailing(id, "\n") do
+      id
+    else
+      _ -> nil
+    end
+  rescue
+    # No boardid: not a Nerves device.
+    ErlangError -> nil
+  end
+
+  defp read_network(state) do
+    dir = Path.join([state.gadget, "functions", @ncm])
+
+    with :ok <- check_gadget(state.gadget),
+         {:ok, device} <- read_address(dir, "dev_addr"),
+         {:ok, host} <- read_address(dir, "host_addr") do
+      {:ok,
+       %{
+         interface: read_interface(dir),
+         device_address: device,
+         host_address: host,
+         default_addresses: state.default_addresses
+       }}
+    end
+  end
+
+  # configfs shows an address with a NUL and a newline after it.
+  defp read_address(dir, attribute) do
+    with {:ok, text} <- File.read(Path.join(dir, attribute)),
+         {:ok, bytes} <- parse_address(String.replace(text, ["\0", "\n"], "")) do
+      {:ok, format_address(bytes)}
+    else
+      _ -> {:error, {:no_network_address, attribute}}
+    end
+  end
+
+  # An interface not registered yet is "(unnamed net_device)".
+  defp read_interface(dir) do
+    case File.read(Path.join(dir, "ifname")) do
+      {:ok, "(" <> _unnamed} -> nil
+      {:ok, name} -> String.trim(name)
+      {:error, _reason} -> nil
+    end
+  end
+
+  # The addresses asked for, those left out as they are.
+  defp wanted_addresses(settings, network) do
+    with :ok <- check_network_settings(settings),
+         {:ok, device} <- wanted_address(:device_address, settings, network),
+         {:ok, host} <- wanted_address(:host_address, settings, network) do
+      if device == host,
+        do: {:error, :same_addresses},
+        else: {:ok, %{device_address: device, host_address: host}}
+    end
+  end
+
+  defp check_network_settings(settings) do
+    cond do
+      not Keyword.keyword?(settings) ->
+        {:error, {:invalid_settings, settings}}
+
+      (unknown = Keyword.keys(settings) -- [:device_address, :host_address, :persist]) != [] ->
+        {:error, {:unknown_options, unknown}}
+
+      Keyword.get(settings, :persist, true) not in [true, false] ->
+        {:error, {:invalid_persist, settings[:persist]}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp wanted_address(key, settings, network) do
+    case Keyword.fetch(settings, key) do
+      :error -> {:ok, network[key]}
+      {:ok, :default} -> default_address(key, network.default_addresses)
+      {:ok, text} -> unicast_address(key, text)
+    end
+  end
+
+  defp default_address(_key, nil), do: {:error, :no_default_addresses}
+  defp default_address(key, defaults), do: {:ok, defaults[key]}
+
+  defp unicast_address(key, text) do
+    case parse_address(text) do
+      {:ok, <<first, _rest::binary>>} when (first &&& 1) == 1 ->
+        {:error, {:multicast_address, key, text}}
+
+      {:ok, <<0::48>>} ->
+        {:error, {:invalid_address, key, text}}
+
+      {:ok, bytes} ->
+        {:ok, format_address(bytes)}
+
+      :error ->
+        {:error, {:invalid_address, key, text}}
+    end
+  end
+
+  # Six bytes with colons or hyphens between them, in either case.
+  defp parse_address(text) when is_binary(text) do
+    with [_, _, _, _, _, _] = parts <- String.split(text, [":", "-"]),
+         true <- Enum.all?(parts, &(byte_size(&1) == 2)),
+         {:ok, bytes} <- Base.decode16(Enum.join(parts), case: :mixed) do
+      {:ok, bytes}
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_address(_other), do: :error
+
+  defp format_address(bytes) do
+    Enum.map_join(:binary.bin_to_list(bytes), ":", &Base.encode16(<<&1>>, case: :lower))
+  end
+
+  defp readdress(_state, same, same), do: :ok
+
+  defp readdress(state, current, wanted) do
+    Logger.info("nano_kvm: USB network addresses #{inspect(wanted)}, reconnecting the gadget")
+    gadget = state.gadget
+    udc = bound_udc(gadget)
+    links = links(gadget)
+
+    result =
+      with :ok <- unbind(gadget, udc),
+           :ok <- each(links, &unlink(gadget, &1)) do
+        write_addresses(state, current, wanted)
+      end
+
+    # The functions go back in their order and the gadget connects again,
+    # also when the addresses did not take.
+    with :ok <- each(links, &relink(gadget, &1)),
+         :ok <- bind(state, udc),
+         do: result
+  end
+
+  # The configuration's functions, in the order to link them again: the
+  # network first, as the NanoKVM-Go system has it, then the KVM functions
+  # and any others.
+  defp links(gadget) do
+    config = Path.join(gadget, @config)
+    order = Enum.uniq([@ncm | Enum.map(@order, &@dirs[&1])])
+
+    case File.ls(config) do
+      {:ok, names} ->
+        names
+        |> Enum.flat_map(&link_target(config, &1))
+        |> Enum.sort_by(fn {name, _function} ->
+          Enum.find_index(order, &(&1 == name)) || length(order)
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  # The kernel takes a relative target from the caller's directory.
+  defp link_target(config, name) do
+    case File.read_link(Path.join(config, name)) do
+      {:ok, function} -> [{name, Path.expand(function, config)}]
+      {:error, _not_a_link} -> []
+    end
+  end
+
+  defp unlink(gadget, {name, _function}), do: File.rm(Path.join([gadget, @config, name]))
+
+  defp relink(gadget, {name, function}) do
+    case File.ln_s(function, Path.join([gadget, @config, name])) do
+      {:error, :eexist} -> :ok
+      result -> result
+    end
+  end
+
+  # The NanoKVM's address is that of its interface, which the function makes
+  # when it is first bound: another address takes a new function. The
+  # computer's is read when the function is linked.
+  defp write_addresses(state, current, wanted) do
+    dir = Path.join([state.gadget, "functions", @ncm])
+
+    if wanted.device_address == current.device_address do
+      write_all(dir, host_addr: wanted.host_address)
+    else
+      kept =
+        for name <- @ncm_kept,
+            {:ok, value} <- [File.read(Path.join(dir, Atom.to_string(name)))],
+            do: {name, String.trim(value)}
+
+      with :ok <- state.rmdir.(dir),
+           :ok <- File.mkdir(dir),
+           :ok <- write_all(dir, kept) do
+        write_all(dir, dev_addr: wanted.device_address, host_addr: wanted.host_address)
+      end
+    end
+  end
+
+  # The NanoKVM-Go system reads them at boot; empty is the default.
+  defp persist(state, settings, wanted) do
+    variables =
+      for {key, variable} <- @address_variables, Keyword.has_key?(settings, key), into: %{} do
+        {variable, if(settings[key] == :default, do: "", else: wanted[key])}
+      end
+
+    cond do
+      variables == %{} ->
+        :ok
+
+      Code.ensure_loaded?(state.kv) ->
+        with {:error, reason} <- state.kv.put(variables), do: {:error, {:not_kept, reason}}
+
+      true ->
+        {:error, {:not_kept, {:undefined, state.kv}}}
+    end
   end
 
   defp apply_functions(state, functions) do

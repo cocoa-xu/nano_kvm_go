@@ -16,6 +16,8 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   pen or a ten-finger touch screen) and a relative boot mouse for the target
   computer, over USB, waking it from sleep
 * **Mass storage** - disk and CD-ROM images for the target computer, over USB
+* **USB network** - to and from the target computer, with MAC addresses that
+  stay the same from boot to boot and that you can choose
 * **LCD, touch panel, button** - pictures and text on the 240 × 284 display,
   its backlight, touches, and the BOOT button
 * **Temperature** - of the SoC, from its on-die sensor
@@ -216,13 +218,29 @@ NanoKVM.USB.connection()
 #=> {:ok, %{state: :configured, speed: :high_speed, controller: "8000000.usb"}}
 ```
 
+## The USB network
+
+The target computer reaches the NanoKVM over USB too, through a network
+adapter it sees. Its MAC address and the NanoKVM's stay the same from boot
+to boot, so that the computer keeps one network interface for the NanoKVM:
+by default they are made from the serial number.
+
+```elixir
+NanoKVM.USB.network()
+#=> {:ok, %{interface: "usb0", device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d", ...}}
+
+# Now and at the next boots; :default goes back to the address made from the serial number.
+:ok = NanoKVM.USB.set_network_addresses(host_address: "02:12:34:56:78:9a")
+:ok = NanoKVM.USB.set_network_addresses(host_address: :default)
+```
+
 ## Changing USB functions
 
-Adding or removing USB functions disconnects the NanoKVM from the target
-computer for a moment, and with the keyboard and mice the target computer
-takes input from it. The controller has seven endpoints for data to the
-computer: the network takes two, and each function one; all of them fit
-together.
+Adding or removing USB functions, or changing the network's addresses,
+disconnects the NanoKVM from the target computer for a moment, and with
+the keyboard and mice the target computer takes input from it. The
+controller has seven endpoints for data to the computer: the network takes
+two, and each function one; all of them fit together.
 
 ## License
 

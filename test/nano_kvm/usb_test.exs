@@ -284,6 +284,182 @@ defmodule NanoKVM.USBTest do
     assert NanoKVM.USB.connection(opts) == {:error, :no_udc}
   end
 
+  describe "the network" do
+    @serial "6a1a78455040f186"
+    @device "ea:52:ab:b6:67:a7"
+    @host "2e:53:95:27:a5:9d"
+
+    # As the NanoKVM-Go system leaves it, with the KVM functions linked after.
+    setup %{gadget: gadget} do
+      ncm = Path.join(gadget, "functions/ncm.usb0")
+      File.write!(Path.join(ncm, "dev_addr"), @device <> "\0\n")
+      File.write!(Path.join(ncm, "host_addr"), @host <> "\0\n")
+      File.write!(Path.join(ncm, "ifname"), "usb0\n")
+      File.write!(Path.join(ncm, "qmult"), "5\n")
+      Process.register(self(), NanoKVM.FakeKV)
+      %{ncm: ncm}
+    end
+
+    defp start_usb(context, opts \\ []) do
+      opts =
+        Keyword.merge(
+          [
+            functions: [:keyboard, :storage],
+            gadget: context.gadget,
+            udc_class: context.udc_class,
+            serial_number: @serial,
+            kv: NanoKVM.FakeKV,
+            name: nil
+          ],
+          opts
+        )
+
+      start_supervised!({NanoKVM.USB, opts}, id: make_ref())
+    end
+
+    test "tells the addresses and those by default", context do
+      pid = start_usb(context)
+
+      assert NanoKVM.USB.network(pid) ==
+               {:ok,
+                %{
+                  interface: "usb0",
+                  device_address: @device,
+                  host_address: @host,
+                  default_addresses: %{device_address: @device, host_address: @host}
+                }}
+
+      File.write!(Path.join(context.ncm, "ifname"), "(unnamed net_device)\n")
+      assert {:ok, %{interface: nil}} = NanoKVM.USB.network(pid)
+
+      pid = start_usb(context, serial_number: nil)
+      assert {:ok, %{default_addresses: nil}} = NanoKVM.USB.network(pid)
+
+      assert NanoKVM.USB.set_network_addresses(pid, host_address: :default) ==
+               {:error, :no_default_addresses}
+    end
+
+    test "gives the target computer's end another address", context do
+      pid = start_usb(context)
+      File.write!(Path.join(context.gadget, "UDC"), "")
+
+      assert :ok = NanoKVM.USB.set_network_addresses(pid, host_address: "02:12:34:56:78:9A")
+
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/host_addr") ==
+               "02:12:34:56:78:9a"
+
+      # The NanoKVM's interface stays: the function is the same.
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/ifname") == "usb0\n"
+      assert FakeConfigfs.read(context.gadget, "UDC") == "udc.0"
+
+      for function <- ["ncm.usb0", "hid.keyboard", "mass_storage.disk"] do
+        assert File.read_link!(Path.join(context.gadget, "configs/c.1/#{function}")) ==
+                 Path.join(context.gadget, "functions/#{function}")
+      end
+
+      assert_received {NanoKVM.FakeKV, %{"usbnet_hostaddr" => "02:12:34:56:78:9a"} = put}
+      refute Map.has_key?(put, "usbnet_devaddr")
+    end
+
+    test "gives the NanoKVM's end another address with a new function", context do
+      # configfs takes the attributes away with the function.
+      rmdir = fn dir ->
+        File.rm_rf!(dir)
+        :ok
+      end
+
+      pid = start_usb(context, rmdir: rmdir)
+
+      assert :ok =
+               NanoKVM.USB.set_network_addresses(pid,
+                 device_address: "06-AA-BB-CC-DD-EE",
+                 host_address: :default
+               )
+
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/dev_addr") ==
+               "06:aa:bb:cc:dd:ee"
+
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/host_addr") == @host
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/qmult") == "5"
+      refute File.exists?(Path.join(context.gadget, "functions/ncm.usb0/ifname"))
+      assert File.exists?(Path.join(context.gadget, "configs/c.1/ncm.usb0"))
+
+      assert_received {NanoKVM.FakeKV,
+                       %{"usbnet_devaddr" => "06:aa:bb:cc:dd:ee", "usbnet_hostaddr" => ""}}
+    end
+
+    test "keeps the addresses that are there", context do
+      pid = start_usb(context)
+      File.write!(Path.join(context.gadget, "UDC"), "untouched")
+
+      assert :ok =
+               NanoKVM.USB.set_network_addresses(pid,
+                 device_address: :default,
+                 host_address: String.upcase(@host)
+               )
+
+      assert FakeConfigfs.read(context.gadget, "UDC") == "untouched"
+      assert_received {NanoKVM.FakeKV, %{"usbnet_devaddr" => "", "usbnet_hostaddr" => @host}}
+
+      assert :ok = NanoKVM.USB.set_network_addresses(pid, host_address: @host, persist: false)
+      refute_received {NanoKVM.FakeKV, _put}
+    end
+
+    test "refuses what is not a unicast address of its own", context do
+      pid = start_usb(context)
+      set = &NanoKVM.USB.validate_network_addresses(pid, &1)
+
+      assert set.(host_address: "02:12:34:56:78") ==
+               {:error, {:invalid_address, :host_address, "02:12:34:56:78"}}
+
+      assert set.(host_address: "02:12:34:56:78:9g") ==
+               {:error, {:invalid_address, :host_address, "02:12:34:56:78:9g"}}
+
+      assert set.(device_address: "00:00:00:00:00:00") ==
+               {:error, {:invalid_address, :device_address, "00:00:00:00:00:00"}}
+
+      assert set.(device_address: "01:00:5e:00:00:fb") ==
+               {:error, {:multicast_address, :device_address, "01:00:5e:00:00:fb"}}
+
+      assert set.(device_address: nil) == {:error, {:invalid_address, :device_address, nil}}
+      assert set.(host_address: @device) == {:error, :same_addresses}
+      assert set.(mac: @device) == {:error, {:unknown_options, [:mac]}}
+      assert set.(persist: "yes") == {:error, {:invalid_persist, "yes"}}
+
+      assert set.([{"host_address", @device}]) ==
+               {:error, {:invalid_settings, [{"host_address", @device}]}}
+
+      assert set.(device_address: @host, host_address: @device) == :ok
+
+      File.write!(Path.join(context.gadget, "UDC"), "untouched")
+
+      assert {:error, :same_addresses} =
+               NanoKVM.USB.set_network_addresses(pid, host_address: @device)
+
+      assert FakeConfigfs.read(context.gadget, "UDC") == "untouched"
+      refute_received {NanoKVM.FakeKV, _put}
+    end
+
+    @tag capture_log: true
+    test "connects the functions again when the new function fails", context do
+      # A plain directory with attributes cannot go.
+      pid = start_usb(context)
+      File.write!(Path.join(context.gadget, "UDC"), "")
+
+      assert {:error, _reason} =
+               NanoKVM.USB.set_network_addresses(pid, device_address: "02:00:00:00:00:01")
+
+      assert FakeConfigfs.read(context.gadget, "functions/ncm.usb0/dev_addr") == @device <> "\0\n"
+      assert FakeConfigfs.read(context.gadget, "UDC") == "udc.0"
+
+      for function <- ["ncm.usb0", "hid.keyboard", "mass_storage.disk"] do
+        assert File.exists?(Path.join(context.gadget, "configs/c.1/#{function}"))
+      end
+
+      refute_received {NanoKVM.FakeKV, _put}
+    end
+  end
+
   @tag capture_log: true
   test "runs on without a gadget", %{tmp_dir: tmp_dir} do
     missing = Path.join(tmp_dir, "missing")

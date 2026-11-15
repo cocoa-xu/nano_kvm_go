@@ -108,6 +108,52 @@ defmodule NanoKVM.HID.Keymap do
           |> Map.merge(@fkeys)
           |> Map.merge(@numpad)
 
+  # Characters on a US keyboard: the key, and whether with shift.
+  @shifted_digits ~c")!@#$%^&*("
+  @characters %{?\s => {"Space", false}, ?\n => {"Enter", false}, ?\t => {"Tab", false}}
+              |> Map.merge(
+                for c <- ?a..?z, into: %{}, do: {c, {"Key" <> String.upcase(<<c>>), false}}
+              )
+              |> Map.merge(for c <- ?A..?Z, into: %{}, do: {c, {"Key" <> <<c>>, true}})
+              |> Map.merge(for c <- ?0..?9, into: %{}, do: {c, {"Digit" <> <<c>>, false}})
+              |> Map.merge(
+                for {c, i} <- Enum.with_index(@shifted_digits),
+                    into: %{},
+                    do: {c, {"Digit#{i}", true}}
+              )
+              |> Map.merge(
+                for {plain, shifted, code} <- [
+                      {?-, ?_, "Minus"},
+                      {?=, ?+, "Equal"},
+                      {?[, ?{, "BracketLeft"},
+                      {?], ?}, "BracketRight"},
+                      {?\\, ?|, "Backslash"},
+                      {?;, ?:, "Semicolon"},
+                      {?', ?", "Quote"},
+                      {?`, ?~, "Backquote"},
+                      {?,, ?<, "Comma"},
+                      {?., ?>, "Period"},
+                      {?/, ??, "Slash"}
+                    ],
+                    {char, shift} <- [{plain, false}, {shifted, true}],
+                    into: %{},
+                    do: {char, {code, shift}}
+              )
+
+  @doc """
+  The key that types a character on a US keyboard, and whether with shift;
+  `nil` for characters it has no key for.
+
+      iex> NanoKVM.HID.Keymap.character(?A)
+      {"KeyA", true}
+      iex> NanoKVM.HID.Keymap.character(10)
+      {"Enter", false}
+      iex> NanoKVM.HID.Keymap.character(?é)
+      nil
+  """
+  @spec character(char()) :: {code(), boolean()} | nil
+  def character(char), do: Map.get(@characters, char)
+
   @doc """
   The report bit of a modifier key, `nil` for other keys.
 

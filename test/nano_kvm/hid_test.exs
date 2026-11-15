@@ -42,6 +42,22 @@ defmodule NanoKVM.HIDTest do
     assert %{keyboard: %{sent: 4, dropped: 0}} = HID.stats(hid)
   end
 
+  test "typing presses each key, with shift where the character needs it", %{
+    hid: hid,
+    keyboard: keyboard
+  } do
+    :ok = HID.type(hid, "aB\u00e9")
+
+    assert reports(keyboard, 8, 6) == [
+             <<0, 0, 0x04, 0, 0, 0, 0, 0>>,
+             <<0, 0, 0, 0, 0, 0, 0, 0>>,
+             <<0x02, 0, 0, 0, 0, 0, 0, 0>>,
+             <<0x02, 0, 0x05, 0, 0, 0, 0, 0>>,
+             <<0x02, 0, 0, 0, 0, 0, 0, 0>>,
+             <<0, 0, 0, 0, 0, 0, 0, 0>>
+           ]
+  end
+
   test "the boot keyboard holds six keys at most", %{hid: hid, keyboard: keyboard} do
     for key <- ~w(KeyA KeyB KeyC KeyD KeyE KeyF KeyG), do: HID.key(hid, key, :down)
     assert List.last(reports(keyboard, 8, 6)) == <<0, 0, 4, 5, 6, 7, 8, 9>>

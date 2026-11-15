@@ -16,6 +16,8 @@ defmodule NanoKVM.HID do
       NanoKVM.HID.pointer(buttons: [])
       NanoKVM.HID.pointer(wheel: -1)
 
+      NanoKVM.HID.type("Hello!\n")
+
       NanoKVM.HID.relative(dx: 10, dy: -3)
       NanoKVM.HID.touch([{0, 0.2, 0.3}, {1, 0.6, 0.3}])
 
@@ -51,6 +53,8 @@ defmodule NanoKVM.HID do
   @retry_delay 2_000
   # Input wakes the target at most this often.
   @wake_every_ms 1_000
+  # Between the reports of typed keys: hosts poll the keyboard each 1 ms.
+  @type_delay_ms 8
 
   @kinds [:keyboard, :mouse, :relative_mouse]
   @buttons %{left: 1, right: 2, middle: 4, back: 8, forward: 16}
@@ -111,6 +115,27 @@ defmodule NanoKVM.HID do
   @spec key(GenServer.server(), key(), :down | :up) :: :ok
   def key(server \\ __MODULE__, key, action) when action in [:down, :up] do
     GenServer.cast(server, {:key, key, action})
+  end
+
+  @doc """
+  Types text on the target as a US keyboard would, a key at a time, and
+  returns when done: some 60 characters a second. Characters that keyboard
+  has no key for are left out.
+  """
+  @spec type(GenServer.server(), String.t()) :: :ok
+  def type(server \\ __MODULE__, text) when is_binary(text) do
+    for char <- String.to_charlist(text),
+        {code, shift} = Keymap.character(char) || {nil, false},
+        code do
+      if shift, do: key(server, "ShiftLeft", :down)
+      key(server, code, :down)
+      Process.sleep(@type_delay_ms)
+      key(server, code, :up)
+      if shift, do: key(server, "ShiftLeft", :up)
+      Process.sleep(@type_delay_ms)
+    end
+
+    :ok
   end
 
   @doc """

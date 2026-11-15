@@ -77,6 +77,24 @@ defmodule NanoKVM.AudioTest do
     assert_receive {Audio, {:format, %{rate: 44_100, channels: 2}}}, 1_000
   end
 
+  test "captures the USB speaker with source: :usb", %{tmp_dir: tmp_dir} do
+    program = Path.join(tmp_dir, "fake_usb_audio")
+
+    File.write!(program, """
+    #!/bin/sh
+    printf '\\000\\000\\000\\010\\002'
+    if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then printf '32000 2'; else printf '48000 2'; fi
+    exec cat > /dev/null
+    """)
+
+    File.chmod!(program, 0o755)
+    audio = start_supervised!({Audio, program: program, source: :usb, name: nil}, id: :usb)
+
+    assert :ok = Audio.subscribe(audio)
+    kill_on_exit(audio)
+    assert_receive {Audio, {:format, %{rate: 32_000, channels: 2}}}, 1_000
+  end
+
   test "stops without the port program", %{tmp_dir: tmp_dir} do
     Process.flag(:trap_exit, true)
     missing = Path.join(tmp_dir, "missing")

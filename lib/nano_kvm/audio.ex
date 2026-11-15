@@ -1,6 +1,6 @@
 defmodule NanoKVM.Audio do
   @moduledoc """
-  The audio of the HDMI/DisplayPort input.
+  The audio of the HDMI/DisplayPort input, or of the USB speaker.
 
   The LT7911EXC passes the source's audio on as I2S. This process captures it
   while there are subscribers, in the `nano_kvm_audio` port program, as
@@ -9,8 +9,11 @@ defmodule NanoKVM.Audio do
   ## Options
 
     * `:name` - the name to register, `NanoKVM.Audio` by default
-    * `:device` - the ALSA capture device, `"hw:CARD=LT7911EXC,DEV=0"` by
-      default
+    * `:source` - `:hdmi`, the HDMI/DisplayPort input (the default), or
+      `:usb`, what the target plays to the NanoKVM's USB speaker (the
+      `:speaker` function of `NanoKVM.USB`); run one process per source
+    * `:device` - the ALSA capture device, by default the source's:
+      `"hw:CARD=LT7911EXC,DEV=0"` or `"hw:CARD=UAC2Gadget,DEV=0"`
     * `:rate` - the sample rate to expect at first, 48000 by default, the
       rate most computers send at
     * `:period_ms` - the audio in each message, 20 ms by default
@@ -39,6 +42,7 @@ defmodule NanoKVM.Audio do
 
   @restart_delay 2_000
   @channels 2
+  @devices %{hdmi: "hw:CARD=LT7911EXC,DEV=0", usb: "hw:CARD=UAC2Gadget,DEV=0"}
 
   @type format() :: %{rate: pos_integer(), channels: pos_integer()}
 
@@ -47,6 +51,7 @@ defmodule NanoKVM.Audio do
 
   @type option() ::
           {:name, GenServer.name()}
+          | {:source, :hdmi | :usb}
           | {:device, String.t()}
           | {:rate, pos_integer()}
           | {:period_ms, pos_integer()}
@@ -80,14 +85,20 @@ defmodule NanoKVM.Audio do
 
   @impl GenServer
   def init(opts) do
+    source = Keyword.get(opts, :source, :hdmi)
+
+    unless source in [:hdmi, :usb] do
+      raise ArgumentError, "invalid :source: #{inspect(source)}"
+    end
+
     config = %{
-      device: Keyword.get(opts, :device, "hw:CARD=LT7911EXC,DEV=0"),
+      device: Keyword.get(opts, :device, @devices[source]),
       rate: Keyword.get(opts, :rate, 48_000),
       period_ms: Keyword.get(opts, :period_ms, 20),
       # For tests: another program than the one built with the library, and
       # another video device (or none) than the capture device.
       program: Keyword.get_lazy(opts, :program, &default_program/0),
-      video_device: Keyword.get(opts, :video_device, :auto)
+      video_device: Keyword.get(opts, :video_device, if(source == :hdmi, do: :auto))
     }
 
     unless is_integer(config.rate) and config.rate > 0 and

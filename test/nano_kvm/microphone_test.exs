@@ -6,7 +6,8 @@ defmodule NanoKVM.MicrophoneTest do
 
   @moduletag :tmp_dir
 
-  # Stands in for nano_kvm_playback: keeps its arguments and what it is sent.
+  # Stands in for nano_kvm_playback: reports a format, keeps its arguments
+  # and what it is sent.
   defp fake_program(tmp_dir) do
     program = Path.join(tmp_dir, "fake_playback")
     received = Path.join(tmp_dir, "received")
@@ -14,6 +15,8 @@ defmodule NanoKVM.MicrophoneTest do
     File.write!(program, """
     #!/bin/sh
     echo "$@" > #{tmp_dir}/args
+    printf '\\000\\000\\000\\020\\002'
+    printf '44100 1 S24_3LE'
     exec cat > #{received}
     """)
 
@@ -34,7 +37,28 @@ defmodule NanoKVM.MicrophoneTest do
              File.read(received) == {:ok, <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>}
            end)
 
-    assert File.read!(Path.join(tmp_dir, "args")) == "hw:CARD=UAC2Gadget,DEV=0 48000 1 960\n"
+    assert File.read!(Path.join(tmp_dir, "args")) == "hw:CARD=UAC2Gadget,DEV=0 20\n"
+  end
+
+  test "tells subscribers the format", %{tmp_dir: tmp_dir} do
+    {program, _received} = fake_program(tmp_dir)
+    mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
+
+    assert Microphone.format(mic) == nil
+    assert :ok = Microphone.subscribe(mic)
+    kill_on_exit(mic)
+
+    format = %{rate: 44_100, channels: 1, sample_format: :s24_3le}
+    assert_receive {Microphone, {:format, ^format}}, 1_000
+    assert Microphone.format(mic) == format
+
+    # Subscribers keep the stream past the idle time.
+    Process.sleep(200)
+    assert %{port: port} = :sys.get_state(mic)
+    assert port
+
+    assert :ok = Microphone.unsubscribe(mic)
+    assert %{port: nil} = :sys.get_state(mic)
   end
 
   test "stops the program after a while without samples", %{tmp_dir: tmp_dir} do

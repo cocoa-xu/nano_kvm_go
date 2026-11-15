@@ -4,7 +4,9 @@ defmodule NanoKVM.Audio do
 
   The LT7911EXC passes the source's audio on as I2S. This process captures it
   while there are subscribers, in the `nano_kvm_audio` port program, as
-  interleaved signed 16-bit little-endian PCM.
+  interleaved PCM: signed 16-bit little-endian from the HDMI input, and from
+  the USB speaker in the format `NanoKVM.USB` set it up with, at the rate the
+  target chose.
 
   ## Options
 
@@ -16,6 +18,8 @@ defmodule NanoKVM.Audio do
       `"hw:CARD=LT7911EXC,DEV=0"` or `"hw:CARD=UAC2Gadget,DEV=0"`
     * `:rate` - the sample rate to expect at first, 48000 by default, the
       rate most computers send at
+    * `:channels` - the channels to capture where the device has them, 2 by
+      default; the USB speaker has the channels it was set up with
     * `:period_ms` - the audio in each message, 20 ms by default
 
   ## Messages
@@ -23,13 +27,14 @@ defmodule NanoKVM.Audio do
   Subscribers receive, with the `:source` of the process, so that one
   subscriber can take both sources apart:
 
-    * `{NanoKVM.Audio, source, {:format, %{rate: rate, channels: 2}}}` when
-      the capture starts, when subscribing to a running one, and when the source
-      switches to another rate. The bridge passes the source's rate on and
-      reports it to the video capture driver, which the port program
-      follows. Where the driver does not report it, the program measures the
-      rate the samples arrive at and snaps it to a standard one (44.1 kHz,
-      48 kHz, ...) within a few seconds.
+    * `{NanoKVM.Audio, source, {:format, format}}`, such as `%{rate: 48000,
+      channels: 2, sample_format: :s16_le}`, when the capture starts, when
+      subscribing to a running one, and when the source switches to another
+      rate. The bridge passes the source's rate on and reports it to the
+      video capture driver, which the port program follows. Where the driver
+      does not report it, the program measures the rate the samples arrive
+      at and snaps it to a standard one (44.1 kHz, 48 kHz, ...) within a few
+      seconds. The USB speaker reports the rate the target chooses.
     * `{NanoKVM.Audio, source, {:pcm, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more
@@ -42,10 +47,17 @@ defmodule NanoKVM.Audio do
   alias NanoKVM.Video.Devices
 
   @restart_delay 2_000
-  @channels 2
   @devices %{hdmi: "hw:CARD=LT7911EXC,DEV=0", usb: "hw:CARD=UAC2Gadget,DEV=0"}
 
-  @type format() :: %{rate: pos_integer(), channels: pos_integer()}
+  @typedoc "Interleaved signed samples, as ALSA names them: S16_LE, S24_3LE..."
+  @type sample_format() :: :s16_le | :s24_3le | :s24_le | :s32_le
+
+  @type format() :: %{
+          rate: pos_integer(),
+          channels: pos_integer(),
+          sample_format: sample_format()
+        }
+
   @type source() :: :hdmi | :usb
 
   @typedoc "A message to subscribers, see the module documentation."
@@ -56,6 +68,7 @@ defmodule NanoKVM.Audio do
           | {:source, source()}
           | {:device, String.t()}
           | {:rate, pos_integer()}
+          | {:channels, pos_integer()}
           | {:period_ms, pos_integer()}
 
   @doc """
@@ -106,6 +119,7 @@ defmodule NanoKVM.Audio do
       source: source,
       device: Keyword.get(opts, :device, @devices[source]),
       rate: Keyword.get(opts, :rate, 48_000),
+      channels: Keyword.get(opts, :channels, 2),
       period_ms: Keyword.get(opts, :period_ms, 20),
       # For tests: another program than the one built with the library, and
       # another video device (or none) than the capture device.
@@ -113,16 +127,24 @@ defmodule NanoKVM.Audio do
       video_device: Keyword.get(opts, :video_device, if(source == :hdmi, do: :auto))
     }
 
-    unless is_integer(config.rate) and config.rate > 0 and
-             is_integer(config.period_ms) and config.period_ms in 1..1000 do
-      raise ArgumentError, "invalid :rate or :period_ms: #{inspect(opts)}"
-    end
+    check_config!(config)
 
     state = %{config: config, port: nil, subscribers: %{}, format: nil, restart: nil}
 
     if File.regular?(config.program),
       do: {:ok, state},
       else: {:stop, {:missing_program, config.program}}
+  end
+
+  defp check_config!(config) do
+    valid? =
+      Enum.all?([config.rate, config.channels], &(is_integer(&1) and &1 > 0)) and
+        is_integer(config.period_ms) and config.period_ms in 1..1000
+
+    unless valid? do
+      raise ArgumentError,
+            "invalid :rate, :channels or :period_ms: #{inspect(Map.take(config, [:rate, :channels, :period_ms]))}"
+    end
   end
 
   @impl GenServer
@@ -217,14 +239,13 @@ defmodule NanoKVM.Audio do
 
   defp ensure_running(%{port: nil, restart: nil} = state) do
     config = state.config
-    frames = div(config.rate * config.period_ms, 1000)
 
     args =
       [
         config.device,
         Integer.to_string(config.rate),
-        Integer.to_string(@channels),
-        Integer.to_string(frames)
+        Integer.to_string(config.channels),
+        Integer.to_string(config.period_ms)
       ] ++ List.wrap(video_device(config.video_device))
 
     port =

@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
- * nano_kvm_audio: ALSA capture of the HDMI/DisplayPort audio, for an Erlang
- * port.
+ * nano_kvm_audio: ALSA capture of the HDMI/DisplayPort audio, or of the USB
+ * speaker, for an Erlang port.
  *
- * Usage: nano_kvm_audio <pcm> <rate> <channels> <period-frames> [<video-device>]
+ * Usage: nano_kvm_audio <pcm> <rate> <channels> <period-ms> [<video-device>]
  *
  * stdout carries {packet, 4} frames of a type byte and a payload: 0 a log
- * line, 1 PCM (interleaved signed 16-bit little endian), 2 the format as
- * "<rate> <channels>". The end of stdin stops the program; nothing else
- * comes in on it.
+ * line, 1 PCM (interleaved), 2 the format as "<rate> <channels> <format>",
+ * the sample format named as ALSA names it (S16_LE, S24_3LE, S32_LE). The
+ * end of stdin stops the program; nothing else comes in on it.
+ *
+ * The program takes signed 16-bit samples where the device has them, else
+ * its own format, and the channels asked for where the device has them,
+ * else its own. The USB audio function fixes its format: the channels and
+ * sample size it was set up with, at the rate the target chose, which the
+ * card's "Capture Rate" control tells. The program follows that control,
+ * and gives the samples the volume and mute the target sets.
  *
  * The LT7911EXC drives the I2S clocks at the source's own sample rate, which
  * the rate asked for here does not change. The bridge reports that rate as
@@ -33,6 +40,8 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "nano_kvm_alsa.h"
 
 enum { PKT_LOG, PKT_PCM, PKT_FORMAT };
 
@@ -142,12 +151,27 @@ static unsigned int meter_update(struct rate_meter *m, unsigned long frames)
 	return rate;
 }
 
-static void report_format(unsigned int rate, unsigned int channels)
-{
-	char format[32];
+/* In order of preference: 16 bits is what the HDMI audio has. */
+static const snd_pcm_format_t formats[] = {
+	SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S24_3LE, SND_PCM_FORMAT_S32_LE,
+};
 
-	snprintf(format, sizeof(format), "%u %u", rate, channels);
-	packet(PKT_FORMAT, format, strlen(format));
+struct stream {
+	snd_pcm_t *pcm;
+	snd_pcm_format_t format;
+	unsigned int rate, channels;
+	snd_pcm_uframes_t period;
+	size_t frame_bytes;
+	uint8_t *samples;
+};
+
+static void report_format(const struct stream *s)
+{
+	char format[64];
+	int n = snprintf(format, sizeof(format), "%u %u %s", s->rate, s->channels,
+			 snd_pcm_format_name(s->format));
+
+	packet(PKT_FORMAT, format, n);
 }
 
 /*
@@ -197,57 +221,99 @@ static int read_rate_events(int fd)
 	return rate;
 }
 
-static snd_pcm_t *open_capture(const char *name, unsigned int *rate, unsigned int channels,
-			       snd_pcm_uframes_t *period)
+static void open_capture(struct stream *s, const char *name, unsigned int rate,
+			 unsigned int channels, unsigned int period_ms)
 {
-	snd_pcm_uframes_t buffer = *period * 8;
+	snd_pcm_uframes_t buffer;
 	snd_pcm_hw_params_t *hw;
-	snd_pcm_t *pcm;
+	size_t i;
 	int err;
 
-	err = snd_pcm_open(&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
+	err = snd_pcm_open(&s->pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
 	if (err < 0)
 		die("open", err);
 
 	snd_pcm_hw_params_alloca(&hw);
-	if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
-	    (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
-	    (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
-	    (err = snd_pcm_hw_params_set_channels(pcm, hw, channels)) < 0 ||
-	    (err = snd_pcm_hw_params_set_rate_near(pcm, hw, rate, NULL)) < 0 ||
-	    (err = snd_pcm_hw_params_set_period_size_near(pcm, hw, period, NULL)) < 0 ||
-	    (err = snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &buffer)) < 0 ||
-	    (err = snd_pcm_hw_params(pcm, hw)) < 0)
+	if ((err = snd_pcm_hw_params_any(s->pcm, hw)) < 0 ||
+	    (err = snd_pcm_hw_params_set_access(s->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
 		die("hw params", err);
 
-	if ((err = snd_pcm_start(pcm)) < 0)
+	for (i = 0; i < sizeof(formats) / sizeof(formats[0]); i++)
+		if (snd_pcm_hw_params_test_format(s->pcm, hw, formats[i]) == 0)
+			break;
+	if (i == sizeof(formats) / sizeof(formats[0]))
+		die("format", -EINVAL);
+	s->format = formats[i];
+
+	s->channels = channels;
+	if (snd_pcm_hw_params_test_channels(s->pcm, hw, channels) < 0 &&
+	    (err = snd_pcm_hw_params_get_channels_min(hw, &s->channels)) < 0)
+		die("channels", err);
+
+	s->rate = rate;
+	if ((err = snd_pcm_hw_params_set_format(s->pcm, hw, s->format)) < 0 ||
+	    (err = snd_pcm_hw_params_set_channels(s->pcm, hw, s->channels)) < 0 ||
+	    (err = snd_pcm_hw_params_set_rate_near(s->pcm, hw, &s->rate, NULL)) < 0)
+		die("hw params", err);
+
+	s->period = s->rate * period_ms / 1000;
+	buffer = s->period * 8;
+	if ((err = snd_pcm_hw_params_set_period_size_near(s->pcm, hw, &s->period, NULL)) < 0 ||
+	    (err = snd_pcm_hw_params_set_buffer_size_near(s->pcm, hw, &buffer)) < 0 ||
+	    (err = snd_pcm_hw_params(s->pcm, hw)) < 0)
+		die("hw params", err);
+
+	if ((err = snd_pcm_start(s->pcm)) < 0)
 		die("start", err);
 
-	return pcm;
+	s->frame_bytes = s->channels * snd_pcm_format_physical_width(s->format) / 8;
+	s->samples = malloc(s->period * s->frame_bytes);
+	if (!s->samples)
+		exit(1);
+}
+
+static void close_capture(struct stream *s)
+{
+	snd_pcm_close(s->pcm);
+	free(s->samples);
+}
+
+/* stdin, the bridge's rate control, the card's controls, the PCM. */
+static int poll_fds(struct pollfd *fds, int control, const struct controls *c,
+		    const struct stream *s, int *nctl, int *npcm)
+{
+	fds[0].fd = STDIN_FILENO;
+	fds[0].events = POLLIN;
+	fds[1].fd = control;	/* poll() skips a negative descriptor */
+	fds[1].events = POLLPRI;
+	*nctl = c->ctl ? snd_ctl_poll_descriptors(c->ctl, fds + 2, MAX_FDS - 2) : 0;
+	*npcm = snd_pcm_poll_descriptors(s->pcm, fds + 2 + *nctl, MAX_FDS - 2 - *nctl);
+	if (*npcm < 0)
+		die("poll descriptors", *npcm);
+	return 2 + *nctl + *npcm;
 }
 
 int main(int argc, char **argv)
 {
 	struct pollfd fds[MAX_FDS];
-	unsigned int rate, channels;
-	snd_pcm_uframes_t period;
+	unsigned int rate, channels, period_ms;
 	struct rate_meter meter = { 0 };
-	int16_t *samples;
-	snd_pcm_t *pcm;
+	struct stream s = { 0 };
+	struct controls c;
 	/* The bridge's rate control, and its rate, 0 for none. */
 	int control = -1;
 	unsigned int bridge_rate = 0;
-	int npcm, err;
+	int nfds, nctl, npcm, err;
 
 	if (argc != 5 && argc != 6) {
-		fprintf(stderr, "usage: %s <pcm> <rate> <channels> <period-frames> [<video-device>]\n",
+		fprintf(stderr, "usage: %s <pcm> <rate> <channels> <period-ms> [<video-device>]\n",
 			argv[0]);
 		return 2;
 	}
 	rate = strtoul(argv[2], NULL, 10);
 	channels = strtoul(argv[3], NULL, 10);
-	period = strtoul(argv[4], NULL, 10);
-	if (!rate || !channels || !period)
+	period_ms = strtoul(argv[4], NULL, 10);
+	if (!rate || !channels || !period_ms || period_ms > 1000)
 		return 2;
 
 	if (argc == 6)
@@ -260,24 +326,15 @@ int main(int argc, char **argv)
 			rate = bridge_rate = reported;
 	}
 
-	pcm = open_capture(argv[1], &rate, channels, &period);
-	samples = calloc(period * channels, sizeof(*samples));
-	if (!samples)
-		return 1;
-	report_format(rate, channels);
-
-	fds[0].fd = STDIN_FILENO;
-	fds[0].events = POLLIN;
-	fds[1].fd = control;	/* poll() skips a negative descriptor */
-	fds[1].events = POLLPRI;
-	npcm = snd_pcm_poll_descriptors(pcm, fds + 2, MAX_FDS - 2);
-	if (npcm < 0)
-		die("poll descriptors", npcm);
+	open_capture(&s, argv[1], rate, channels, period_ms);
+	report_format(&s);
+	open_controls(&c, s.pcm, "Capture");
+	nfds = poll_fds(fds, control, &c, &s, &nctl, &npcm);
 
 	for (;;) {
 		unsigned short revents;
 
-		if (poll(fds, 2 + npcm, -1) < 0) {
+		if (poll(fds, nfds, -1) < 0) {
 			if (errno == EINTR)
 				continue;
 			return 1;
@@ -295,41 +352,56 @@ int main(int argc, char **argv)
 
 			if (reported >= 0)
 				bridge_rate = reported;
-			if (bridge_rate && bridge_rate != rate) {
+			if (bridge_rate && bridge_rate != s.rate) {
 				logline("the source sends %u Hz", bridge_rate);
-				rate = bridge_rate;
-				report_format(rate, channels);
+				s.rate = bridge_rate;
+				report_format(&s);
 			}
 		}
 
-		err = snd_pcm_poll_descriptors_revents(pcm, fds + 2, npcm, &revents);
+		if (nctl && fds[2].revents) {
+			long chosen = controls_changed(&c);
+
+			/* The device opens at the rate the target chose. */
+			if (chosen > 0 && (unsigned long)chosen != s.rate) {
+				logline("the target sends %ld Hz", chosen);
+				close_capture(&s);
+				open_capture(&s, argv[1], chosen, channels, period_ms);
+				report_format(&s);
+				nfds = poll_fds(fds, control, &c, &s, &nctl, &npcm);
+				continue;
+			}
+		}
+
+		err = snd_pcm_poll_descriptors_revents(s.pcm, fds + 2 + nctl, npcm, &revents);
 		if (err < 0)
 			die("revents", err);
 		if (!(revents & POLLIN))
 			continue;
 
 		for (;;) {
-			snd_pcm_sframes_t n = snd_pcm_readi(pcm, samples, period);
+			snd_pcm_sframes_t n = snd_pcm_readi(s.pcm, s.samples, s.period);
 			unsigned int measured;
 
 			if (n == -EAGAIN)
 				break;
 			if (n < 0) {
 				logline("read: %s, recovering", snd_strerror(n));
-				if ((err = snd_pcm_recover(pcm, n, 1)) < 0 ||
-				    (err = snd_pcm_start(pcm)) < 0)
+				if ((err = snd_pcm_recover(s.pcm, n, 1)) < 0 ||
+				    (err = snd_pcm_start(s.pcm)) < 0)
 					die("recover", err);
 				break;
 			}
-			packet(PKT_PCM, samples, n * channels * sizeof(*samples));
+			apply_gain(&c, s.format, s.samples, n * s.channels);
+			packet(PKT_PCM, s.samples, n * s.frame_bytes);
 
-			if (bridge_rate)
+			if (bridge_rate || c.rate)
 				continue;
 			measured = meter_update(&meter, n);
-			if (measured && measured != rate) {
+			if (measured && measured != s.rate) {
 				logline("samples arrive at %u Hz", measured);
-				rate = measured;
-				report_format(rate, channels);
+				s.rate = measured;
+				report_format(&s);
 			}
 		}
 	}

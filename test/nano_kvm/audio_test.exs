@@ -35,7 +35,7 @@ defmodule NanoKVM.AudioTest do
     assert_receive {Audio, :hdmi, {:format, %{rate: 48_000, channels: 2}}}, 1_000
     assert_receive {Audio, :hdmi, {:pcm, "ABCD"}}
     assert_receive {Audio, :hdmi, {:pcm, "EFGH"}}
-    assert Audio.format(audio) == %{rate: 48_000, channels: 2}
+    assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
 
     assert :ok = Audio.unsubscribe(audio)
     assert %{port: nil} = :sys.get_state(audio)
@@ -115,7 +115,13 @@ defmodule NanoKVM.AudioTest do
   test "decodes the packets of the port program" do
     assert Protocol.decode(<<0, "open">>) == {:log, "open"}
     assert Protocol.decode(<<1, 1, 0, 255, 255>>) == {:pcm, <<1, 0, 255, 255>>}
-    assert Protocol.decode(<<2, "44100 2">>) == {:format, %{rate: 44_100, channels: 2}}
+    assert Protocol.decode(<<2, "44100 2">>) ==
+             {:format, %{rate: 44_100, channels: 2, sample_format: :s16_le}}
+
+    assert Protocol.decode(<<2, "96000 1 S24_3LE">>) ==
+             {:format, %{rate: 96_000, channels: 1, sample_format: :s24_3le}}
+
+    assert Protocol.decode(<<2, "48000 2 FLOAT_LE">>) == :unknown
     assert Protocol.decode(<<2, "fast">>) == :unknown
     assert Protocol.decode(<<7>>) == :unknown
   end

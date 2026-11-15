@@ -3,7 +3,7 @@
  * nano_kvm_audio: ALSA capture of the HDMI/DisplayPort audio, for an Erlang
  * port.
  *
- * Usage: nano_kvm_audio <pcm> <rate> <channels> <period-frames>
+ * Usage: nano_kvm_audio <pcm> <rate> <channels> <period-frames> [<video-device>]
  *
  * stdout carries {packet, 4} frames of a type byte and a payload: 0 a log
  * line, 1 PCM (interleaved signed 16-bit little endian), 2 the format as
@@ -11,13 +11,18 @@
  * comes in on it.
  *
  * The LT7911EXC drives the I2S clocks at the source's own sample rate, which
- * the rate asked for here does not change: the program measures the rate the
- * samples arrive at and reports the format again when it is another one.
- * Without audio from the source no samples arrive, and the program waits.
+ * the rate asked for here does not change. The bridge reports that rate as
+ * the "Audio sampling rate" control of the video capture device: given that
+ * device, the program follows the control and reports the format again when
+ * it changes. While the control has no rate, the program measures the rate
+ * the samples arrive at instead. Without audio from the source no samples
+ * arrive, and the program waits.
  */
 #include <alsa/asoundlib.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
 #include <math.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -25,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -144,6 +150,53 @@ static void report_format(unsigned int rate, unsigned int channels)
 	packet(PKT_FORMAT, format, strlen(format));
 }
 
+/*
+ * Opens the video device and subscribes to the bridge's rate control.
+ * Returns the device, or -1 when it has no such control.
+ */
+static int open_rate_control(const char *device)
+{
+	struct v4l2_query_ext_ctrl q = { .id = V4L2_CTRL_FLAG_NEXT_CTRL };
+	int fd = open(device, O_RDWR | O_NONBLOCK);
+
+	if (fd < 0) {
+		logline("%s: %s", device, strerror(errno));
+		return -1;
+	}
+
+	while (ioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q) == 0) {
+		if (!strcmp(q.name, "Audio sampling rate")) {
+			struct v4l2_event_subscription sub = {
+				.type = V4L2_EVENT_CTRL,
+				.id = q.id,
+				.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL,
+			};
+
+			if (ioctl(fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
+				return fd;
+			break;
+		}
+		q.id |= V4L2_CTRL_FLAG_NEXT_CTRL;
+	}
+
+	logline("%s: no audio sampling rate control", device);
+	close(fd);
+	return -1;
+}
+
+/* The value in the latest control event, -1 without one. */
+static int read_rate_events(int fd)
+{
+	struct v4l2_event ev;
+	int rate = -1;
+
+	while (ioctl(fd, VIDIOC_DQEVENT, &ev) == 0)
+		if (ev.type == V4L2_EVENT_CTRL)
+			rate = ev.u.ctrl.value;
+
+	return rate;
+}
+
 static snd_pcm_t *open_capture(const char *name, unsigned int *rate, unsigned int channels,
 			       snd_pcm_uframes_t *period)
 {
@@ -181,10 +234,14 @@ int main(int argc, char **argv)
 	struct rate_meter meter = { 0 };
 	int16_t *samples;
 	snd_pcm_t *pcm;
+	/* The bridge's rate control, and its rate, 0 for none. */
+	int control = -1;
+	unsigned int bridge_rate = 0;
 	int npcm, err;
 
-	if (argc != 5) {
-		fprintf(stderr, "usage: %s <pcm> <rate> <channels> <period-frames>\n", argv[0]);
+	if (argc != 5 && argc != 6) {
+		fprintf(stderr, "usage: %s <pcm> <rate> <channels> <period-frames> [<video-device>]\n",
+			argv[0]);
 		return 2;
 	}
 	rate = strtoul(argv[2], NULL, 10);
@@ -192,6 +249,16 @@ int main(int argc, char **argv)
 	period = strtoul(argv[4], NULL, 10);
 	if (!rate || !channels || !period)
 		return 2;
+
+	if (argc == 6)
+		control = open_rate_control(argv[5]);
+	if (control >= 0) {
+		/* The subscription sends the current value right away. */
+		int reported = read_rate_events(control);
+
+		if (reported > 0)
+			rate = bridge_rate = reported;
+	}
 
 	pcm = open_capture(argv[1], &rate, channels, &period);
 	samples = calloc(period * channels, sizeof(*samples));
@@ -201,14 +268,16 @@ int main(int argc, char **argv)
 
 	fds[0].fd = STDIN_FILENO;
 	fds[0].events = POLLIN;
-	npcm = snd_pcm_poll_descriptors(pcm, fds + 1, MAX_FDS - 1);
+	fds[1].fd = control;	/* poll() skips a negative descriptor */
+	fds[1].events = POLLPRI;
+	npcm = snd_pcm_poll_descriptors(pcm, fds + 2, MAX_FDS - 2);
 	if (npcm < 0)
 		die("poll descriptors", npcm);
 
 	for (;;) {
 		unsigned short revents;
 
-		if (poll(fds, 1 + npcm, -1) < 0) {
+		if (poll(fds, 2 + npcm, -1) < 0) {
 			if (errno == EINTR)
 				continue;
 			return 1;
@@ -221,7 +290,19 @@ int main(int argc, char **argv)
 				return 0;	/* the port is gone */
 		}
 
-		err = snd_pcm_poll_descriptors_revents(pcm, fds + 1, npcm, &revents);
+		if (fds[1].revents & POLLPRI) {
+			int reported = read_rate_events(control);
+
+			if (reported >= 0)
+				bridge_rate = reported;
+			if (bridge_rate && bridge_rate != rate) {
+				logline("the source sends %u Hz", bridge_rate);
+				rate = bridge_rate;
+				report_format(rate, channels);
+			}
+		}
+
+		err = snd_pcm_poll_descriptors_revents(pcm, fds + 2, npcm, &revents);
 		if (err < 0)
 			die("revents", err);
 		if (!(revents & POLLIN))
@@ -242,6 +323,8 @@ int main(int argc, char **argv)
 			}
 			packet(PKT_PCM, samples, n * channels * sizeof(*samples));
 
+			if (bridge_rate)
+				continue;
 			measured = meter_update(&meter, n);
 			if (measured && measured != rate) {
 				logline("samples arrive at %u Hz", measured);

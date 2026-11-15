@@ -20,10 +20,12 @@ defmodule NanoKVM.Audio do
   Subscribers receive:
 
     * `{NanoKVM.Audio, {:format, %{rate: rate, channels: 2}}}` when the
-      capture starts, when subscribing to a running one, and when the
-      samples turn out to arrive at another rate. The bridge passes the
-      source's rate on: the port program measures it and snaps it to a
-      standard one (44.1 kHz, 48 kHz, ...) within a few seconds.
+      capture starts, when subscribing to a running one, and when the source
+      switches to another rate. The bridge passes the source's rate on and
+      reports it to the video capture driver, which the port program
+      follows. Where the driver does not report it, the program measures the
+      rate the samples arrive at and snaps it to a standard one (44.1 kHz,
+      48 kHz, ...) within a few seconds.
     * `{NanoKVM.Audio, {:pcm, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more
@@ -33,6 +35,7 @@ defmodule NanoKVM.Audio do
   require Logger
 
   alias NanoKVM.Audio.Protocol
+  alias NanoKVM.Video.Devices
 
   @restart_delay 2_000
   @channels 2
@@ -81,8 +84,10 @@ defmodule NanoKVM.Audio do
       device: Keyword.get(opts, :device, "hw:CARD=LT7911EXC,DEV=0"),
       rate: Keyword.get(opts, :rate, 48_000),
       period_ms: Keyword.get(opts, :period_ms, 20),
-      # For tests: another program than the one built with the library.
-      program: Keyword.get_lazy(opts, :program, &default_program/0)
+      # For tests: another program than the one built with the library, and
+      # another video device (or none) than the capture device.
+      program: Keyword.get_lazy(opts, :program, &default_program/0),
+      video_device: Keyword.get(opts, :video_device, :auto)
     }
 
     unless is_integer(config.rate) and config.rate > 0 and
@@ -190,12 +195,13 @@ defmodule NanoKVM.Audio do
     config = state.config
     frames = div(config.rate * config.period_ms, 1000)
 
-    args = [
-      config.device,
-      Integer.to_string(config.rate),
-      Integer.to_string(@channels),
-      Integer.to_string(frames)
-    ]
+    args =
+      [
+        config.device,
+        Integer.to_string(config.rate),
+        Integer.to_string(@channels),
+        Integer.to_string(frames)
+      ] ++ List.wrap(video_device(config.video_device))
 
     port =
       Port.open({:spawn_executable, config.program}, [
@@ -209,6 +215,10 @@ defmodule NanoKVM.Audio do
   end
 
   defp ensure_running(state), do: state
+
+  # The device with the bridge's rate control.
+  defp video_device(:auto), do: Devices.capture()
+  defp video_device(device), do: device
 
   defp stop(%{port: nil} = state), do: cancel_restart(state)
 

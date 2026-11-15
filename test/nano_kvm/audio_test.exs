@@ -7,12 +7,13 @@ defmodule NanoKVM.AudioTest do
 
   @moduletag :tmp_dir
 
-  # Stands in for nano_kvm_audio: reports the format, sends two periods of
-  # PCM, then waits for the end of its stdin.
+  # Stands in for nano_kvm_audio: reports the format, 44.1 kHz when given the
+  # video device of the test, sends two periods of PCM, then waits for the
+  # end of its stdin.
   @fake """
   #!/bin/sh
   printf '\\000\\000\\000\\010\\002'
-  printf '48000 2'
+  if [ "$5" = /dev/video7 ]; then printf '44100 2'; else printf '48000 2'; fi
   printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
   exec cat > /dev/null
   """
@@ -21,8 +22,8 @@ defmodule NanoKVM.AudioTest do
     program = Path.join(tmp_dir, "fake_audio")
     File.write!(program, @fake)
     File.chmod!(program, 0o755)
-    audio = start_supervised!({Audio, program: program, name: nil})
-    %{audio: audio}
+    audio = start_supervised!({Audio, program: program, video_device: nil, name: nil})
+    %{audio: audio, program: program}
   end
 
   test "captures while there are subscribers", %{audio: audio} do
@@ -63,6 +64,17 @@ defmodule NanoKVM.AudioTest do
 
     assert %{port: nil, subscribers: subscribers} = :sys.get_state(audio)
     assert subscribers == %{}
+  end
+
+  test "hands the video device with the rate control to the program", %{program: program} do
+    audio =
+      start_supervised!({Audio, program: program, video_device: "/dev/video7", name: nil},
+        id: :with_video_device
+      )
+
+    assert :ok = Audio.subscribe(audio)
+    kill_on_exit(audio)
+    assert_receive {Audio, {:format, %{rate: 44_100, channels: 2}}}, 1_000
   end
 
   test "stops without the port program", %{tmp_dir: tmp_dir} do

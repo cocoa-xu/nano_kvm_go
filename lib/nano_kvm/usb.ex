@@ -94,6 +94,27 @@ defmodule NanoKVM.USB do
     8 => 0x63F
   }
   @max_rates 10
+  # The device controller's states and speeds in sysfs (usb_state_string,
+  # usb_speed_string).
+  @states %{
+    "not attached" => :not_attached,
+    "attached" => :attached,
+    "powered" => :powered,
+    "reconnecting" => :reconnecting,
+    "unauthenticated" => :unauthenticated,
+    "default" => :default,
+    "addressed" => :addressed,
+    "configured" => :configured,
+    "suspended" => :suspended
+  }
+  @speeds %{
+    "low-speed" => :low_speed,
+    "full-speed" => :full_speed,
+    "high-speed" => :high_speed,
+    "super-speed" => :super_speed,
+    "super-speed-plus" => :super_speed_plus,
+    "UNKNOWN" => :unknown
+  }
   # The largest packets the USB controller (DWC3) takes: its smallest
   # transmit FIFO holds 832 bytes of one, and the receive FIFO three of 682.
   @max_packet %{microphone: 832, speaker: 682}
@@ -108,6 +129,22 @@ defmodule NanoKVM.USB do
           function_name()
           | {:microphone | :speaker, [audio_option()]}
           | {:mouse, [mode: NanoKVM.HID.pointer_mode()]}
+
+  @typedoc "The state of the USB connection, see `connection/1`."
+  @type connection_state() ::
+          :not_attached
+          | :attached
+          | :powered
+          | :reconnecting
+          | :unauthenticated
+          | :default
+          | :addressed
+          | :configured
+          | :suspended
+          | :unknown
+
+  @type speed() ::
+          :low_speed | :full_speed | :high_speed | :super_speed | :super_speed_plus | :unknown
 
   @type audio_format() :: %{
           channels: 1..8,
@@ -162,6 +199,48 @@ defmodule NanoKVM.USB do
   """
   @spec audio(GenServer.server()) :: %{optional(:microphone | :speaker) => audio_format()}
   def audio(server \\ __MODULE__), do: GenServer.call(server, :audio)
+
+  @doc """
+  The USB connection to the target computer: the state the target has put
+  the NanoKVM in, the speed, and the device controller.
+
+    * `:configured` - the target uses the functions
+    * `:suspended` - the target sleeps, or has suspended the port
+    * `:not_attached` - no computer at the other end of the cable
+    * `:attached`, `:powered`, `:default`, `:addressed` - on the way to
+      `:configured`
+
+  ```
+  NanoKVM.USB.connection()
+  #=> {:ok, %{state: :configured, speed: :high_speed, controller: "8000000.usb"}}
+  ```
+
+  The speed is `:low_speed`, `:full_speed`, `:high_speed`, `:super_speed`
+  or `:unknown`. Without a controller bound to the gadget the result is
+  `{:error, :no_udc}`. Takes the `:gadget` option.
+  """
+  @spec connection(keyword()) ::
+          {:ok, %{state: connection_state(), speed: speed(), controller: String.t()}}
+          | {:error, term()}
+  def connection(opts \\ []) do
+    udc_class = Keyword.get(opts, :udc_class, @udc_class)
+
+    with udc when udc != "" <- bound_udc(Keyword.get(opts, :gadget, @default_gadget)),
+         dir = Path.join(udc_class, udc),
+         {:ok, state} <- File.read(Path.join(dir, "state")) do
+      speed =
+        case File.read(Path.join(dir, "current_speed")) do
+          {:ok, speed} -> Map.get(@speeds, String.trim(speed), :unknown)
+          {:error, _reason} -> :unknown
+        end
+
+      {:ok,
+       %{state: Map.get(@states, String.trim(state), :unknown), speed: speed, controller: udc}}
+    else
+      "" -> {:error, :no_udc}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc """
   The configfs directory of the gadget the NanoKVM-Go system sets up.

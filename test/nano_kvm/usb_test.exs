@@ -267,6 +267,23 @@ defmodule NanoKVM.USBTest do
              NanoKVM.USB.start_link(functions: [:camera], gadget: gadget, name: nil)
   end
 
+  test "tells the state of the connection to the target", %{gadget: gadget, udc_class: udc_class} do
+    opts = [gadget: gadget, udc_class: udc_class]
+    udc = Path.join(udc_class, "udc.0")
+    File.write!(Path.join(udc, "state"), "configured\n")
+    File.write!(Path.join(udc, "current_speed"), "high-speed\n")
+
+    assert NanoKVM.USB.connection(opts) ==
+             {:ok, %{state: :configured, speed: :high_speed, controller: "udc.0"}}
+
+    File.write!(Path.join(udc, "state"), "not attached\n")
+    File.write!(Path.join(udc, "current_speed"), "UNKNOWN\n")
+    assert {:ok, %{state: :not_attached, speed: :unknown}} = NanoKVM.USB.connection(opts)
+
+    File.write!(Path.join(gadget, "UDC"), "\n")
+    assert NanoKVM.USB.connection(opts) == {:error, :no_udc}
+  end
+
   @tag capture_log: true
   test "runs on without a gadget", %{tmp_dir: tmp_dir} do
     missing = Path.join(tmp_dir, "missing")

@@ -7,9 +7,6 @@
 * `NanoKVM.Audio` takes the sample rate from the bridge, through the video
   capture driver, and measures it only where the driver does not report it
 * `NanoKVM.temperature/0`: the SoC temperature
-* `NanoKVM.Audio` keeps the capture running after the last subscriber
-  leaves: restarting the I2S receiver over and over can leave the bridge
-  sending silence until the source restarts its audio
 
 ## v0.1.0
 

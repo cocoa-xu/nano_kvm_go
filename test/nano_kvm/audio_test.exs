@@ -26,7 +26,7 @@ defmodule NanoKVM.AudioTest do
     %{audio: audio, program: program}
   end
 
-  test "captures from the first subscriber on", %{audio: audio} do
+  test "captures while there are subscribers", %{audio: audio} do
     assert Audio.format(audio) == nil
     assert :ok = Audio.subscribe(audio)
     kill_on_exit(audio)
@@ -37,19 +37,12 @@ defmodule NanoKVM.AudioTest do
     assert_receive {Audio, {:pcm, "EFGH"}}
     assert Audio.format(audio) == %{rate: 48_000, channels: 2}
 
-    # The capture goes on: restarting it can leave the bridge silent.
     assert :ok = Audio.unsubscribe(audio)
-    assert %{port: port, subscribers: subscribers} = :sys.get_state(audio)
-    assert is_port(port) and subscribers == %{}
-    assert Audio.format(audio) == %{rate: 48_000, channels: 2}
-
-    # A new subscriber gets the format of the running capture at once.
-    assert :ok = Audio.subscribe(audio)
-    assert_receive {Audio, {:format, %{rate: 48_000, channels: 2}}}
-    assert %{port: ^port} = :sys.get_state(audio)
+    assert %{port: nil} = :sys.get_state(audio)
+    assert Audio.format(audio) == nil
   end
 
-  test "drops a subscriber that goes away", %{audio: audio} do
+  test "a subscriber that goes away stops the capture", %{audio: audio} do
     test = self()
 
     subscriber =
@@ -69,8 +62,8 @@ defmodule NanoKVM.AudioTest do
     send(subscriber, :leave)
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}
 
-    assert %{port: port, subscribers: subscribers} = :sys.get_state(audio)
-    assert is_port(port) and subscribers == %{}
+    assert %{port: nil, subscribers: subscribers} = :sys.get_state(audio)
+    assert subscribers == %{}
   end
 
   test "hands the video device with the rate control to the program", %{program: program} do

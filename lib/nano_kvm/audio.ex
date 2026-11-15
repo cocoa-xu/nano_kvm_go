@@ -3,11 +3,8 @@ defmodule NanoKVM.Audio do
   The audio of the HDMI/DisplayPort input.
 
   The LT7911EXC passes the source's audio on as I2S. This process captures it
-  in the `nano_kvm_audio` port program, as interleaved signed 16-bit
-  little-endian PCM. The capture starts with the first subscriber and keeps
-  running after the last one leaves: stopping and starting the I2S receiver
-  over and over can leave the bridge sending silence until the source
-  restarts its audio.
+  while there are subscribers, in the `nano_kvm_audio` port program, as
+  interleaved signed 16-bit little-endian PCM.
 
   ## Options
 
@@ -182,7 +179,6 @@ defmodule NanoKVM.Audio do
     end
   end
 
-  # The capture keeps running without subscribers, see the module docs.
   defp drop_subscriber(state, pid) do
     case Map.pop(state.subscribers, pid) do
       {nil, _subscribers} ->
@@ -190,7 +186,8 @@ defmodule NanoKVM.Audio do
 
       {monitor, subscribers} ->
         Process.demonitor(monitor, [:flush])
-        %{state | subscribers: subscribers}
+        state = %{state | subscribers: subscribers}
+        if subscribers == %{}, do: stop(state), else: state
     end
   end
 
@@ -222,6 +219,26 @@ defmodule NanoKVM.Audio do
   # The device with the bridge's rate control.
   defp video_device(:auto), do: Devices.capture()
   defp video_device(device), do: device
+
+  defp stop(%{port: nil} = state), do: cancel_restart(state)
+
+  defp stop(state) do
+    # It may have exited on its own, its exit_status still on the way.
+    try do
+      Port.close(state.port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    cancel_restart(%{state | port: nil, format: nil})
+  end
+
+  defp cancel_restart(%{restart: nil} = state), do: state
+
+  defp cancel_restart(state) do
+    _remaining = Process.cancel_timer(state.restart)
+    %{state | restart: nil}
+  end
 
   defp default_program, do: Application.app_dir(:nano_kvm, "priv/nano_kvm_audio")
 end

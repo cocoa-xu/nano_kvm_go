@@ -95,6 +95,17 @@ defmodule NanoKVM.AudioTest do
     assert_receive {Audio, {:format, %{rate: 32_000, channels: 2}}}, 1_000
   end
 
+  test "processes for both sources fit in one supervisor", %{program: program} do
+    children = [
+      {Audio, program: program, video_device: nil},
+      {Audio, program: program, source: :usb, name: :usb_speaker}
+    ]
+
+    assert {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_one)
+    assert [:usb_speaker, Audio] = Enum.map(Supervisor.which_children(sup), &elem(&1, 0))
+    Supervisor.stop(sup)
+  end
+
   test "stops without the port program", %{tmp_dir: tmp_dir} do
     Process.flag(:trap_exit, true)
     missing = Path.join(tmp_dir, "missing")

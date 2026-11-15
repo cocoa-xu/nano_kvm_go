@@ -57,6 +57,15 @@ defmodule NanoKVM.Audio do
           | {:period_ms, pos_integer()}
 
   @doc """
+  A child specification, with the `:name` as its id: one process per
+  source can run in the same supervisor.
+  """
+  @spec child_spec([option()]) :: Supervisor.child_spec()
+  def child_spec(opts) do
+    %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  @doc """
   Starts the process. See the module documentation for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()

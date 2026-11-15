@@ -31,17 +31,19 @@ defmodule NanoKVM.Video do
 
   A subscriber with more than 30 messages waiting misses the deltas until
   the next keyframe, which is then asked for.
+
+  ## EDID
+
+  The bridge presents an EDID to the source, kept in its flash: `edid/0`
+  reads it and `set_edid/1` replaces it, with or without the process.
   """
   use GenServer
   require Logger
 
+  alias NanoKVM.Video.Devices
+  alias NanoKVM.Video.EDID
   alias NanoKVM.Video.Input
   alias NanoKVM.Video.Protocol
-
-  @capture_name "ax620e-vin"
-  @jpeg_name "axera,ax620e-jenc-enc"
-  @h264_name "axera,ax620e-venc-enc"
-  @video4linux "/sys/class/video4linux"
 
   @restart_delay 2_000
   @input_restart_delay 100
@@ -104,13 +106,32 @@ defmodule NanoKVM.Video do
           csi_recoveries: non_neg_integer() | nil
         }
   def capture_stats do
-    dir = with "/dev/" <> node <- find_device(@capture_name), do: device_dir(node)
+    dir = with device when is_binary(device) <- Devices.capture(), do: Devices.sysfs_dir(device)
 
     %{
       mid_frame_stops: read_counter(dir, "mid_frame_stops"),
       csi_recoveries: read_counter(dir, "csi_recoveries")
     }
   end
+
+  @doc """
+  The EDID the input presents to the source: one to four blocks of 128 bytes.
+
+  The first read takes over a second, as the bridge reads its flash.
+  """
+  @spec edid() :: {:ok, binary()} | {:error, term()}
+  def edid, do: EDID.read(edid_program(), Devices.capture())
+
+  @doc """
+  Stores an EDID for the input to present to the source: one to four blocks
+  of 128 bytes, each with a valid checksum. Takes a few seconds.
+
+  The source reads it when it next connects, for example when the NanoKVM is
+  plugged in again. Read the current EDID with `edid/0` first to be able to
+  go back to it.
+  """
+  @spec set_edid(binary()) :: :ok | {:error, term()}
+  def set_edid(edid), do: EDID.write(edid_program(), Devices.capture(), edid)
 
   @impl GenServer
   def init(opts) do
@@ -330,33 +351,15 @@ defmodule NanoKVM.Video do
   end
 
   defp devices(%{devices: nil}) do
-    capture = find_device(@capture_name)
-    jpeg = find_device(@jpeg_name)
+    capture = Devices.capture()
+    jpeg = Devices.jpeg()
 
     if capture && jpeg,
-      do: {:ok, %{capture: capture, jpeg: jpeg, h264: find_device(@h264_name)}},
+      do: {:ok, %{capture: capture, jpeg: jpeg, h264: Devices.h264()}},
       else: :error
   end
 
   defp devices(%{devices: devices}), do: {:ok, Map.put_new(devices, :h264, nil)}
-
-  defp find_device(name) do
-    @video4linux
-    |> Path.join("video*")
-    |> Path.wildcard()
-    |> Enum.find_value(fn dir ->
-      if device_name(dir) == name, do: "/dev/" <> Path.basename(dir)
-    end)
-  end
-
-  defp device_name(dir) do
-    case File.read(Path.join(dir, "name")) do
-      {:ok, contents} -> String.trim(contents)
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp device_dir(node), do: Path.join([@video4linux, node, "device"])
 
   defp read_counter(dir, file) when is_binary(dir) do
     with {:ok, text} <- File.read(Path.join(dir, file)),
@@ -370,6 +373,8 @@ defmodule NanoKVM.Video do
   defp read_counter(_dir, _file), do: nil
 
   defp default_program, do: Application.app_dir(:nano_kvm, "priv/nano_kvm_video")
+
+  defp edid_program, do: Application.app_dir(:nano_kvm, "priv/nano_kvm_edid")
 
   defp validate!(config) do
     check!(config.mjpeg_port in 1..65_535, :mjpeg_port, config.mjpeg_port)

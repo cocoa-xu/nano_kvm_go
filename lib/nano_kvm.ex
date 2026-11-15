@@ -11,6 +11,10 @@ defmodule NanoKVM do
       mouse, mass storage, microphone and speaker
     * `NanoKVM.HID` - keyboard and mouse input for the target computer
     * `NanoKVM.Storage` - disk images in the mass storage drive
+    * `NanoKVM.Display`, `NanoKVM.Backlight`, `NanoKVM.Touch`,
+      `NanoKVM.Button` - the LCD, its touch panel and the BOOT button
+    * `NanoKVM.Hardware` - the board, its parts and drivers, its storage
+    * `NanoKVM.Metrics` - CPU, memory, temperature and network each second
 
   The processes take their options when started; add them to your
   supervision tree, `NanoKVM.USB` first:
@@ -24,8 +28,8 @@ defmodule NanoKVM do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  The input's EDID and the SoC temperature need no process:
-  `NanoKVM.Video.edid/0` and `temperature/0`.
+  The input's EDID, the SoC temperature and the hardware need no process:
+  `NanoKVM.Video.edid/0`, `temperature/0` and `NanoKVM.Hardware`.
   """
 
   @doc """

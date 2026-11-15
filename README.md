@@ -19,6 +19,9 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 * **LCD, touch panel, button** - pictures and text on the 240 × 284 display,
   its backlight, touches, and the BOOT button
 * **Temperature** - of the SoC, from its on-die sensor
+* **The device itself** - its board, parts and drivers, microSD card and
+  partitions, and what it is doing each second: CPU, memory, temperature,
+  network traffic, load; the USB connection to the target
 
 It drives the open mainline drivers of the Nerves system through the standard
 kernel interfaces (V4L2, ALSA, configfs USB gadgets), with no vendor
@@ -187,6 +190,30 @@ The font is Spleen 8 × 16 by Frederic Cambus (BSD-2-Clause, notice in
 ```elixir
 NanoKVM.temperature()
 #=> {:ok, 47.3}
+```
+
+### The device itself
+
+```elixir
+NanoKVM.Hardware.info()
+#=> %{model: "Sipeed NanoKVM-Go", soc: "Axera AX620QE", cpu: %{model: "Cortex-A53", cores: 2}, ...}
+
+# Each part with its Linux device and driver: a missing device or driver shows what failed.
+NanoKVM.Hardware.components()
+#=> [%{id: :video_bridge, chip: "Lontium LT7911EXC", bus: :i2c, device: "0-0041", driver: "lt7911exc"}, ...]
+
+# The microSD card, its partitions and how full they are.
+NanoKVM.Hardware.storage()
+
+# Samples each second, with the last five minutes, to whoever subscribes.
+children = [NanoKVM.Metrics]
+NanoKVM.Metrics.current()
+#=> %{cpu: %{total: 12.5, cores: [10.0, 15.0]}, temperature: 71.3, network: %{"wlan0" => ...}, ...}
+:ok = NanoKVM.Metrics.subscribe()
+
+# Whether the target computer has set the USB device up, and at what speed.
+NanoKVM.USB.connection()
+#=> {:ok, %{state: :configured, speed: :high_speed, controller: "8000000.usb"}}
 ```
 
 ## Changing USB functions

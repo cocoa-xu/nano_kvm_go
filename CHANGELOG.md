@@ -36,6 +36,13 @@
   `NanoKVM.Button`: the BOOT button
 * `NanoKVM.Backlight`: the LCD's brightness on a lightness curve, and the
   frequency of the PWM that dims it, 25 kHz by default
+* `NanoKVM.Hardware`: the board, its SoC, CPU and memory, its parts with
+  the Linux device and driver of each, and the microSD card with its
+  partitions and their use
+* `NanoKVM.Metrics`: CPU, memory, temperature, network traffic, load and
+  uptime each second, with five minutes of history, for subscribers
+* `NanoKVM.USB.connection/1`: the state of the USB connection to the target
+  and its speed
 
 ## v0.1.0
 

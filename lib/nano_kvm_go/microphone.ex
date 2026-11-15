@@ -1,11 +1,11 @@
 defmodule NanoKVMGo.Microphone do
   @moduledoc """
   The microphone the target computer sees, with the `:microphone` function
-  of `NanoKVMGo.USB`.
+  of the USB gadget (see `NanoKVMGo.USB`).
 
   `play/2` sends it PCM: interleaved samples in the microphone's format, the
-  channels and sample size `NanoKVMGo.USB` set it up with, at the rate the
-  target chose. `format/1` tells that format, and subscribers hear of it.
+  channels and sample size the gadget set it up with, at the rate the target
+  chose. `format/1` tells that format, and subscribers hear of it.
   The `nano_kvm_go_playback` port program keeps the microphone's stream
   running: between samples the target hears silence, and samples that come
   in faster than the target takes them are dropped once more than 200 ms

@@ -7,23 +7,22 @@ defmodule NanoKVMGo do
     * `NanoKVMGo.Audio` - the audio of the HDMI/DisplayPort input, or of the
       USB speaker, as PCM
     * `NanoKVMGo.Microphone` - sound for the target's USB microphone
-    * `NanoKVMGo.USB` - the USB functions the target computer sees: keyboard,
-      mouse, mass storage, microphone and speaker
-    * `NanoKVMGo.HID` - keyboard and mouse input for the target computer
-    * `NanoKVMGo.Storage` - disk images in the mass storage drive
+    * `NanoKVMGo.USB` - the board's USB gadget, for a gadget library such as
+      `Kuroneko.Gadget`, which gives the target computer a keyboard, a
+      mouse, mass storage, a microphone and a speaker
     * `NanoKVMGo.Display`, `NanoKVMGo.Backlight`, `NanoKVMGo.Touch`,
       `NanoKVMGo.Button` - the LCD, its touch panel and the BOOT button
+    * `NanoKVMGo.Expansion` - the two lines of the auxiliary USB-C port
     * `NanoKVMGo.Hardware` - the board, its parts and drivers, its storage
     * `NanoKVMGo.Metrics` - CPU, memory, temperature and network each second
 
   The processes take their options when started; add them to your
-  supervision tree, `NanoKVMGo.USB` first:
+  supervision tree, the USB gadget first:
 
       children = [
-        {NanoKVMGo.USB, functions: [:keyboard, :mouse, :storage]},
+        {Kuroneko.Gadget, NanoKVMGo.USB.gadget_options() ++ [functions: [:keyboard, :mouse]]},
         NanoKVMGo.Video,
-        NanoKVMGo.Audio,
-        NanoKVMGo.HID
+        NanoKVMGo.Audio
       ]
 
       Supervisor.start_link(children, strategy: :one_for_one)

@@ -35,8 +35,8 @@ defmodule NanoKVMGo.MixProject do
 
   defp description do
     "The hardware of the Sipeed NanoKVM-Go for Elixir and Nerves: video capture " <>
-      "with H.264 and JPEG encoding, audio capture, USB keyboard and mouse, USB mass storage, " <>
-      "the LCD, the auxiliary port's expansion lines, and the device's own parts and metrics."
+      "with H.264 and JPEG encoding, audio capture and playback, the LCD, the auxiliary " <>
+      "port's expansion lines, the board's USB gadget, and the device's own parts and metrics."
   end
 
   defp package do
@@ -78,8 +78,6 @@ defmodule NanoKVMGo.MixProject do
           NanoKVMGo.Audio,
           NanoKVMGo.Microphone
         ],
-        "Keyboard and mouse": [NanoKVMGo.HID, NanoKVMGo.HID.Keymap, NanoKVMGo.HID.Report],
-        USB: [NanoKVMGo.USB, NanoKVMGo.Storage],
         "LCD, touch panel, button": [
           NanoKVMGo.Display,
           NanoKVMGo.Display.Canvas,
@@ -87,7 +85,7 @@ defmodule NanoKVMGo.MixProject do
           NanoKVMGo.Touch,
           NanoKVMGo.Button
         ],
-        "The device": [NanoKVMGo.Hardware, NanoKVMGo.Metrics, NanoKVMGo.Expansion]
+        "The device": [NanoKVMGo.Hardware, NanoKVMGo.Metrics, NanoKVMGo.Expansion, NanoKVMGo.USB]
       ]
     ]
   end

@@ -5,15 +5,16 @@ defmodule NanoKVMGo.Audio do
   The LT7911EXC passes the source's audio on as I2S. This process captures it
   while there are subscribers, in the `nano_kvm_go_audio` port program, as
   interleaved PCM: signed 16-bit little-endian from the HDMI input, and from
-  the USB speaker in the format `NanoKVMGo.USB` set it up with, at the rate the
-  target chose.
+  the USB speaker in the format the USB gadget set it up with, at the rate
+  the target chose.
 
   ## Options
 
     * `:name` - the name to register, `NanoKVMGo.Audio` by default
     * `:source` - `:hdmi`, the HDMI/DisplayPort input (the default), or
       `:usb`, what the target plays to the NanoKVM's USB speaker (the
-      `:speaker` function of `NanoKVMGo.USB`); run one process per source
+      `:speaker` function of the USB gadget, see `NanoKVMGo.USB`); run one
+      process per source
     * `:device` - the ALSA capture device, by default the source's:
       `"hw:CARD=LT7911EXC,DEV=0"` or `"hw:CARD=UAC2Gadget,DEV=0"`
     * `:rate` - the sample rate to expect at first, 48000 by default, the

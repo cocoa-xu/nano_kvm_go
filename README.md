@@ -12,12 +12,10 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   sound for its microphone, and what it plays to the speaker, each mono to
   7.1, 16 to 32 bits, at the rates the target chooses from, with its volume
 * **EDID** - the EDID the input presents to the source, to read or replace
-* **Keyboard and mouse** - a boot keyboard, an absolute pointer (a mouse, a
-  pen or a ten-finger touch screen) and a relative boot mouse for the target
-  computer, over USB, waking it from sleep
-* **Mass storage** - disk and CD-ROM images for the target computer, over USB
-* **USB network** - to and from the target computer, with MAC addresses that
-  stay the same from boot to boot and that you can choose
+* **USB gadget** - the board's settings for
+  [`kuroneko_gadget`](https://github.com/cocoa-xu/kuroneko_gadget), which
+  gives the target computer a keyboard, a mouse, mass storage, a microphone
+  and a speaker; USB network addresses that stay the same from boot to boot
 * **LCD, touch panel, button** - pictures and text on the 240 × 284 display,
   its backlight, touches, and the BOOT button
 * **Expansion lines** - the two lines of the auxiliary USB-C port, off until
@@ -25,7 +23,7 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 * **Temperature** - of the SoC, from its on-die sensor
 * **The device itself** - its board, parts and drivers, microSD card and
   partitions, and what it is doing each second: CPU, memory, temperature,
-  network traffic, load; the USB connection to the target
+  network traffic, load
 
 It drives the open mainline drivers of the Nerves system through the standard
 kernel interfaces (V4L2, ALSA, configfs USB gadgets), with no vendor
@@ -41,22 +39,22 @@ def deps do
 end
 ```
 
-The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`, `nano_kvm_go_playback` and
-`nano_kvm_go_edid`, C) are built for the target by the Nerves toolchain; the audio
-ones link alsa-lib, which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the
-rest of the library still compiles and its tests run.
+The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`,
+`nano_kvm_go_playback` and `nano_kvm_go_edid`, C) are built for the target
+by the Nerves toolchain; the audio ones link alsa-lib, which the NanoKVM-Go
+system has. On hosts other than Linux they are not built, so the rest of the
+library still compiles and its tests run.
 
 ## Usage
 
 The processes take their options when started. Add them to your supervision
-tree, `NanoKVMGo.USB` first:
+tree, the USB gadget first:
 
 ```elixir
 children = [
-  {NanoKVMGo.USB, functions: [:keyboard, :mouse, :storage]},
+  {Kuroneko.Gadget, NanoKVMGo.USB.gadget_options() ++ [functions: [:keyboard, :mouse]]},
   {NanoKVMGo.Video, mjpeg_port: 8088},
-  NanoKVMGo.Audio,
-  NanoKVMGo.HID
+  NanoKVMGo.Audio
 ]
 
 Supervisor.start_link(children, strategy: :one_for_one)
@@ -105,19 +103,21 @@ two captures apart.
 
 ### USB microphone and speaker
 
-With the `:microphone` and `:speaker` USB functions the target computer sees
-a USB sound card, stereo, 16-bit and 48 kHz by default. Each direction takes
-its channels, the rates the target can choose from (starting with the first)
-and its sample size:
+With the `:microphone` and `:speaker` functions of the USB gadget the target
+computer sees a USB sound card, stereo, 16-bit and 48 kHz by default. Each
+direction takes its channels, the rates the target can choose from
+(starting with the first) and its sample size:
 
 ```elixir
 children = [
-  {NanoKVMGo.USB,
-   functions: [
-     :storage,
-     {:microphone, channels: 1, rates: [48_000, 44_100]},
-     {:speaker, channels: 6, rates: [48_000, 96_000], sample_bits: 24}
-   ]},
+  {Kuroneko.Gadget,
+   NanoKVMGo.USB.gadget_options() ++
+     [
+       functions: [
+         {:microphone, channels: 1, rates: [48_000, 44_100]},
+         {:speaker, channels: 6, rates: [48_000, 96_000], sample_bits: 24}
+       ]
+     ]},
   NanoKVMGo.Microphone,
   {NanoKVMGo.Audio, source: :usb, name: MyApp.Speaker}
 ]
@@ -133,34 +133,12 @@ NanoKVMGo.Microphone.play(pcm)
 ```
 
 The target chooses the rate (a Mac in Audio MIDI Setup) and sets the volume;
-both directions follow. `NanoKVMGo.USB.validate/1` tells whether the USB
-controller can carry a format.
+both directions follow. With the board's options,
+`Kuroneko.Gadget.validate/2` tells whether its USB controller can carry a
+format.
 
-### Keyboard and mouse
-
-```elixir
-children = [{NanoKVMGo.USB, functions: [:keyboard, :mouse, :relative_mouse]}, NanoKVMGo.HID]
-
-NanoKVMGo.HID.key("KeyA", :down)
-NanoKVMGo.HID.key("KeyA", :up)
-NanoKVMGo.HID.pointer(x: 0.5, y: 0.5, buttons: [:left])
-NanoKVMGo.HID.relative(dx: 10, dy: -5, wheel: 1)
-NanoKVMGo.HID.release_all()
-```
-
-Keys are named like the browser's `KeyboardEvent.code`, so web clients can
-pass them through. `{:mouse, mode: :stylus}` or `{:mouse, mode: :touch}`
-turns the absolute pointer into a pen or a touch screen, for Android and
-iPadOS targets; `NanoKVMGo.HID.touch/2` sends up to ten touches. The relative
-mouse is a boot mouse, for BIOS setups and games. Input wakes a target that
-sleeps.
-
-### Mass storage
-
-```elixir
-NanoKVMGo.Storage.insert("/data/images/debian.iso")
-NanoKVMGo.Storage.eject()
-```
+The keyboard, the mice and the mass storage are in `kuroneko_gadget` too:
+`Kuroneko.Gadget.HID` and `Kuroneko.Gadget.Storage`.
 
 ### LCD and touch panel
 
@@ -214,10 +192,6 @@ children = [NanoKVMGo.Metrics]
 NanoKVMGo.Metrics.current()
 #=> %{cpu: %{total: 12.5, cores: [10.0, 15.0]}, temperature: 71.3, network: %{"wlan0" => ...}, ...}
 :ok = NanoKVMGo.Metrics.subscribe()
-
-# Whether the target computer has set the USB device up, and at what speed.
-NanoKVMGo.USB.connection()
-#=> {:ok, %{state: :configured, speed: :high_speed, controller: "8000000.usb"}}
 ```
 
 ## The USB network
@@ -225,15 +199,17 @@ NanoKVMGo.USB.connection()
 The target computer reaches the NanoKVM over USB too, through a network
 adapter it sees. Its MAC address and the NanoKVM's stay the same from boot
 to boot, so that the computer keeps one network interface for the NanoKVM:
-by default they are made from the serial number.
+the system takes them from the U-Boot environment, else makes them from the
+serial number. With the board's options, `Kuroneko.Gadget` keeps new
+addresses there:
 
 ```elixir
-NanoKVMGo.USB.network()
-#=> {:ok, %{interface: "usb0", device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d", ...}}
+NanoKVMGo.USB.default_network_addresses("6a1a78455040f186")
+#=> %{device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d"}
 
 # Now and at the next boots; :default goes back to the address made from the serial number.
-:ok = NanoKVMGo.USB.set_network_addresses(host_address: "02:12:34:56:78:9a")
-:ok = NanoKVMGo.USB.set_network_addresses(host_address: :default)
+:ok = Kuroneko.Gadget.set_network_addresses(host_address: "02:12:34:56:78:9a")
+:ok = Kuroneko.Gadget.set_network_addresses(host_address: :default)
 ```
 
 ## The expansion lines
@@ -260,13 +236,11 @@ In the `:uart` mode the lines are `"ttyS3"` for `Circuits.UART`, and in the
 lines, and at what voltage (most likely 3.3 V), is not known yet: measure
 before connecting anything but the Finger Robot.
 
-## Changing USB functions
+## USB functions
 
-Adding or removing USB functions, or changing the network's addresses,
-disconnects the NanoKVM from the target computer for a moment, and with
-the keyboard and mice the target computer takes input from it. The
-controller has seven endpoints for data to the computer: the network takes
-two, and each function one; all of them fit together.
+The USB controller has seven endpoints for data to the computer: the
+network takes two, the audio two and each other function one, so all the
+functions of `Kuroneko.Gadget` fit together.
 
 ## License
 

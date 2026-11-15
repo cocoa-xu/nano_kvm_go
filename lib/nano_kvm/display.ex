@@ -15,7 +15,10 @@ defmodule NanoKVM.Display do
       NanoKVM.Display.fill(100, 100, 8, 8, Canvas.rgb(255, 0, 0))
 
   The kernel sends what changed to the panel. Without the framebuffer (no
-  panel, or a system without the driver) the calls return an error.
+  panel, or a system without the driver) the calls return an error. The
+  framebuffer is looked for when first needed, and again after a write
+  fails: the display carries on when the panel's driver loads late or
+  probes again.
 
   ## Options
 
@@ -26,8 +29,6 @@ defmodule NanoKVM.Display do
   use GenServer
 
   alias NanoKVM.Display.Canvas
-
-  @graphics "/sys/class/graphics"
 
   @type info() :: %{width: pos_integer(), height: pos_integer(), stride: pos_integer()}
 
@@ -79,8 +80,9 @@ defmodule NanoKVM.Display do
   @impl GenServer
   def init(opts) do
     state = %{
-      framebuffer: Keyword.get_lazy(opts, :framebuffer, &find_framebuffer/0),
-      # For tests: where the device nodes are.
+      framebuffer: Keyword.get(opts, :framebuffer),
+      # For tests: where framebuffers and device nodes are.
+      graphics: Keyword.get(opts, :graphics, "/sys/class/graphics"),
       dev: Keyword.get(opts, :dev, "/dev"),
       device: nil,
       info: nil
@@ -99,33 +101,42 @@ defmodule NanoKVM.Display do
 
   def handle_call({:show, pixels}, _from, state) do
     with {:ok, state} <- open(state),
-         :ok <- check_size(pixels, state.info),
-         :ok <- write_rows(state.device, pixels, state.info) do
-      {:reply, :ok, state}
+         :ok <- check_size(pixels, state.info) do
+      written(write_rows(state.device, pixels, state.info), state)
     else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      error -> {:reply, error, state}
     end
   end
 
   def handle_call({:fill, rect, color}, _from, state) do
     case open(state) do
-      {:ok, state} -> {:reply, fill_rect(state.device, state.info, rect, color), state}
+      {:ok, state} -> written(fill_rect(state.device, state.info, rect, color), state)
       error -> {:reply, error, state}
     end
   end
 
   defp open(%{device: device} = state) when device != nil, do: {:ok, state}
 
-  defp open(%{framebuffer: nil}), do: {:error, :no_framebuffer}
-
   defp open(state) do
-    with {:ok, info} <- read_info(state.framebuffer),
-         {:ok, device} <- File.open(device_path(state), [:write, :raw, :binary]) do
+    with dir when is_binary(dir) <- state.framebuffer || find_framebuffer(state.graphics),
+         {:ok, info} <- read_info(dir),
+         {:ok, device} <-
+           File.open(Path.join(state.dev, Path.basename(dir)), [:write, :raw, :binary]) do
       {:ok, %{state | device: device, info: info}}
+    else
+      nil -> {:error, :no_framebuffer}
+      error -> error
     end
   end
 
-  defp device_path(state), do: Path.join(state.dev, Path.basename(state.framebuffer))
+  # A framebuffer that fails a write may be gone with its driver: the next
+  # call opens one again.
+  defp written(:ok, state), do: {:reply, :ok, state}
+
+  defp written({:error, _reason} = error, state) do
+    _ = File.close(state.device)
+    {:reply, error, %{state | device: nil, info: nil}}
+  end
 
   defp read_info(dir) do
     with {:ok, size} <- File.read(Path.join(dir, "virtual_size")),
@@ -192,13 +203,13 @@ defmodule NanoKVM.Display do
   end
 
   # The framebuffer the panel's DRM driver emulates.
-  defp find_framebuffer do
-    case File.ls(@graphics) do
+  defp find_framebuffer(graphics) do
+    case File.ls(graphics) do
       {:ok, names} ->
         names
         |> Enum.filter(&String.starts_with?(&1, "fb"))
         |> Enum.sort()
-        |> Enum.map(&Path.join(@graphics, &1))
+        |> Enum.map(&Path.join(graphics, &1))
         |> Enum.find(fn dir ->
           match?({:ok, "panel-mipi-dbi" <> _}, File.read(Path.join(dir, "name")))
         end)

@@ -59,7 +59,56 @@ defmodule NanoKVM.DisplayTest do
   end
 
   test "without a framebuffer, errors", %{tmp_dir: tmp_dir} do
-    display = start_supervised!({Display, framebuffer: nil, dev: tmp_dir, name: nil})
+    display =
+      start_supervised!(
+        {Display, graphics: Path.join(tmp_dir, "graphics"), dev: tmp_dir, name: nil}
+      )
+
     assert Display.info(display) == {:error, :no_framebuffer}
+  end
+
+  test "finds the panel's framebuffer once it comes, and again after a write fails",
+       %{tmp_dir: tmp_dir} do
+    graphics = Path.join(tmp_dir, "graphics")
+    dev = Path.join(tmp_dir, "dev")
+    File.mkdir_p!(dev)
+    display = start_supervised!({Display, graphics: graphics, dev: dev, name: nil})
+
+    assert Display.info(display) == {:error, :no_framebuffer}
+
+    framebuffer(graphics, dev, "fb0", "simple")
+    framebuffer(graphics, dev, "fb1", "panel-mipi-dbid")
+    assert :ok = Display.show(display, <<1::little-16, 2::little-16>>)
+    assert File.read!(Path.join(dev, "fb1")) == <<1::little-16, 2::little-16>>
+
+    # The panel's driver probes again: the device open fails its writes, and
+    # the framebuffer comes back under another number.
+    :sys.replace_state(display, fn state ->
+      :ok = File.close(state.device)
+      state
+    end)
+
+    File.rm_rf!(Path.join(graphics, "fb1"))
+    framebuffer(graphics, dev, "fb2", "panel-mipi-dbid")
+
+    assert {:error, _reason} = Display.fill(display, 0, 0, 1, 1, 0xFFFF)
+    assert :ok = Display.show(display, <<3::little-16, 4::little-16>>)
+    assert File.read!(Path.join(dev, "fb2")) == <<3::little-16, 4::little-16>>
+  end
+
+  # A 2 × 1 framebuffer named as its driver names it, and its device.
+  defp framebuffer(graphics, dev, fb, name) do
+    sysfs = Path.join(graphics, fb)
+    File.mkdir_p!(sysfs)
+
+    for {file, value} <- [
+          {"name", "#{name}\n"},
+          {"virtual_size", "2,1\n"},
+          {"stride", "4\n"},
+          {"bits_per_pixel", "16\n"}
+        ],
+        do: File.write!(Path.join(sysfs, file), value)
+
+    File.write!(Path.join(dev, fb), "")
   end
 end

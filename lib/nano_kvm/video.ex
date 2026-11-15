@@ -17,6 +17,9 @@ defmodule NanoKVM.Video do
 
     * `:name` - the name to register, `NanoKVM.Video` by default
     * `:mjpeg_port` - the TCP port of the MJPEG server, 8088 by default
+    * `:mjpeg_token` - a token the MJPEG stream asks for,
+      `/stream.mjpg?token=<token>`; without one the stream and a viewer page
+      are open to anyone who reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
     * `:h264_qp` - the H.264 quantizer, 0 (best) to 51, 30 by default
 
@@ -52,6 +55,7 @@ defmodule NanoKVM.Video do
   @type option() ::
           {:name, GenServer.name()}
           | {:mjpeg_port, :inet.port_number()}
+          | {:mjpeg_token, String.t() | nil}
           | {:jpeg_quality, 1..100}
           | {:h264_qp, 0..51}
 
@@ -138,6 +142,7 @@ defmodule NanoKVM.Video do
   def init(opts) do
     config = %{
       mjpeg_port: Keyword.get(opts, :mjpeg_port, 8088),
+      mjpeg_token: Keyword.get(opts, :mjpeg_token),
       jpeg_quality: Keyword.get(opts, :jpeg_quality, 60),
       h264_qp: Keyword.get(opts, :h264_qp, 30),
       # For tests: another program and other devices than the ones found.
@@ -318,6 +323,9 @@ defmodule NanoKVM.Video do
     end
   end
 
+  defp token_env(nil), do: []
+  defp token_env(token), do: [{~c"KVM_MJPEG_TOKEN", String.to_charlist(token)}]
+
   defp open_port(config, devices) do
     args = [
       devices.capture,
@@ -339,7 +347,7 @@ defmodule NanoKVM.Video do
       {:packet, 4},
       :exit_status,
       args: args,
-      env: [{~c"KVM_PORT", ~c"1"} | h264_env]
+      env: [{~c"KVM_PORT", ~c"1"} | h264_env] ++ token_env(config.mjpeg_token)
     ])
   end
 
@@ -380,6 +388,14 @@ defmodule NanoKVM.Video do
   defp validate!(config) do
     check!(config.mjpeg_port in 1..65_535, :mjpeg_port, config.mjpeg_port)
     check!(config.jpeg_quality in 1..100, :jpeg_quality, config.jpeg_quality)
+
+    check!(
+      is_nil(config.mjpeg_token) or
+        (is_binary(config.mjpeg_token) and config.mjpeg_token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/),
+      :mjpeg_token,
+      config.mjpeg_token
+    )
+
     check!(config.h264_qp in 0..51, :h264_qp, config.h264_qp)
   end
 

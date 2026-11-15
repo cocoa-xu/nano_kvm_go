@@ -290,6 +290,23 @@ static void *sender(void *arg)
 	return NULL;
 }
 
+/*
+ * Whether a request may have the stream: with KVM_MJPEG_TOKEN set, only
+ * "GET /stream.mjpg?token=<token>".
+ */
+static int stream_allowed(const char *req, const char *token)
+{
+	static const char path[] = "GET /stream.mjpg";
+	static const char query[] = "GET /stream.mjpg?token=";
+	size_t n = strlen(token ? token : "");
+
+	if (!token || !*token)
+		return !strncmp(req, path, sizeof(path) - 1);
+	return !strncmp(req, query, sizeof(query) - 1) &&
+	       !strncmp(req + sizeof(query) - 1, token, n) &&
+	       (req[sizeof(query) - 1 + n] == ' ' || req[sizeof(query) - 1 + n] == '&');
+}
+
 static void *acceptor(void *arg)
 {
 	static const char resp[] = "HTTP/1.0 200 OK\r\nCache-Control: no-cache\r\n"
@@ -297,6 +314,8 @@ static void *acceptor(void *arg)
 	static const char page[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n"
 		"<html><body style=\"margin:0;background:#000\">"
 		"<img src=\"/stream.mjpg\" style=\"width:100%\"></body></html>";
+	static const char forbidden[] = "HTTP/1.0 403 Forbidden\r\n\r\n";
+	const char *token = getenv("KVM_MJPEG_TOKEN");
 	int ls = *(int *)arg;
 
 	for (;;) {
@@ -312,8 +331,11 @@ static void *acceptor(void *arg)
 			continue;
 		}
 		req[n] = 0;
-		if (!strstr(req, "GET /stream.mjpg")) {
-			if (write(c, page, sizeof(page) - 1) < 0)
+		if (!stream_allowed(req, token)) {
+			/* The viewer page only where the stream is open to all. */
+			const char *reply = token && *token ? forbidden : page;
+
+			if (write(c, reply, strlen(reply)) < 0)
 				logline("write: %s", strerror(errno));
 			close(c);
 			continue;

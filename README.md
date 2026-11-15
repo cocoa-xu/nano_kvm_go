@@ -9,10 +9,12 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 * **Audio** - the audio of that input, as 16-bit stereo PCM, at the rate the
   source sends
 * **Two-way USB audio** - a microphone and a speaker for the target computer:
-  sound for its microphone, and what it plays to the speaker
+  sound for its microphone, and what it plays to the speaker, each mono to
+  7.1, 16 to 32 bits, at the rates the target chooses from, with its volume
 * **EDID** - the EDID the input presents to the source, to read or replace
-* **Keyboard and mouse** - a boot keyboard and an absolute mouse for the
-  target computer, over USB
+* **Keyboard and mouse** - a boot keyboard, an absolute pointer (a mouse, a
+  pen or a ten-finger touch screen) and a relative boot mouse for the target
+  computer, over USB, waking it from sleep
 * **Mass storage** - disk and CD-ROM images for the target computer, over USB
 * **Temperature** - of the SoC, from its on-die sensor
 
@@ -95,33 +97,54 @@ two captures apart.
 ### USB microphone and speaker
 
 With the `:microphone` and `:speaker` USB functions the target computer sees
-a USB sound card (48 kHz; the microphone mono, the speaker stereo):
+a USB sound card, stereo, 16-bit and 48 kHz by default. Each direction takes
+its channels, the rates the target can choose from (starting with the first)
+and its sample size:
 
 ```elixir
 children = [
-  {NanoKVM.USB, functions: [:storage, :microphone, :speaker]},
+  {NanoKVM.USB,
+   functions: [
+     :storage,
+     {:microphone, channels: 1, rates: [48_000, 44_100]},
+     {:speaker, channels: 6, rates: [48_000, 96_000], sample_bits: 24}
+   ]},
   NanoKVM.Microphone,
   {NanoKVM.Audio, source: :usb, name: MyApp.Speaker}
 ]
 
-# What the target hears from its microphone: 48 kHz mono S16_LE.
+# What the target hears from its microphone, in the format it takes now.
+:ok = NanoKVM.Microphone.subscribe()
+receive do: ({NanoKVM.Microphone, {:format, format}} -> format)
+#=> %{rate: 48000, channels: 1, sample_format: :s16_le}
 NanoKVM.Microphone.play(pcm)
 
 # What the target plays to the speaker, as with the HDMI/DisplayPort audio.
 :ok = NanoKVM.Audio.subscribe(MyApp.Speaker)
 ```
 
+The target chooses the rate (a Mac in Audio MIDI Setup) and sets the volume;
+both directions follow. `NanoKVM.USB.validate/1` tells whether the USB
+controller can carry a format.
+
 ### Keyboard and mouse
 
 ```elixir
+children = [{NanoKVM.USB, functions: [:keyboard, :mouse, :relative_mouse]}, NanoKVM.HID]
+
 NanoKVM.HID.key("KeyA", :down)
 NanoKVM.HID.key("KeyA", :up)
 NanoKVM.HID.pointer(x: 0.5, y: 0.5, buttons: [:left])
+NanoKVM.HID.relative(dx: 10, dy: -5, wheel: 1)
 NanoKVM.HID.release_all()
 ```
 
 Keys are named like the browser's `KeyboardEvent.code`, so web clients can
-pass them through.
+pass them through. `{:mouse, mode: :stylus}` or `{:mouse, mode: :touch}`
+turns the absolute pointer into a pen or a touch screen, for Android and
+iPadOS targets; `NanoKVM.HID.touch/2` sends up to ten touches. The relative
+mouse is a boot mouse, for BIOS setups and games. Input wakes a target that
+sleeps.
 
 ### Mass storage
 
@@ -140,8 +163,10 @@ NanoKVM.temperature()
 ## Changing USB functions
 
 Adding or removing USB functions disconnects the NanoKVM from the target
-computer for a moment, and with `:keyboard` and `:mouse` the target computer
-takes input from it. Choose the functions once, at startup.
+computer for a moment, and with the keyboard and mice the target computer
+takes input from it. The controller has seven endpoints for data to the
+computer: the network takes two, and each function one; all of them fit
+together.
 
 ## License
 

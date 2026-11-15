@@ -14,6 +14,22 @@
   what the target plays to the speaker
 * `NanoKVM.Audio` messages name their source: `{NanoKVM.Audio, :hdmi, ...}`
   or `{NanoKVM.Audio, :usb, ...}`
+* USB audio formats: `{:microphone, options}` and `{:speaker, options}` take
+  `:channels` (1 to 8), `:rates` (up to 10, the target choosing) and
+  `:sample_bits` (16, 24, 32); the microphone is stereo by default, as the
+  speaker. `NanoKVM.USB.audio/1` tells the formats, `NanoKVM.USB.validate/1`
+  checks functions without setting them up
+* `NanoKVM.Microphone` and the USB speaker follow the rate the target
+  chooses and apply its volume and mute; formats name their samples
+  (`:sample_format`), and `NanoKVM.Microphone.subscribe/1` tells the format
+  to play in
+* `:relative_mouse`, a boot mouse, with `NanoKVM.HID.relative/2`; the
+  `:mouse` function in the `:stylus` and `:touch` modes, with
+  `NanoKVM.HID.touch/2`; five buttons and a horizontal wheel on both mice
+  (`NanoKVM.HID.Report.mouse/5`)
+* The keyboard has the usages up to 0xDD: F13 to F24, the international and
+  language keys, the editing keys
+* Input wakes a target that sleeps
 
 ## v0.1.0
 

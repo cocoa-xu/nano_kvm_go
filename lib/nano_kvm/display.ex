@@ -14,11 +14,13 @@ defmodule NanoKVM.Display do
 
       NanoKVM.Display.fill(100, 100, 8, 8, Canvas.rgb(255, 0, 0))
 
-  The kernel sends what changed to the panel. Without the framebuffer (no
-  panel, or a system without the driver) the calls return an error. The
-  framebuffer is looked for when first needed, and again after a write
-  fails: the display carries on when the panel's driver loads late or
-  probes again.
+  `show/2` writes only the rows that differ from what the framebuffer
+  holds, and the kernel sends only those to the panel: showing the same
+  picture again costs little, and puts back what something else drew over
+  it, such as the kernel's console. Without the framebuffer (no panel, or a
+  system without the driver) the calls return an error. The framebuffer is
+  looked for when first needed, and again after a write fails: the display
+  carries on when the panel's driver loads late or probes again.
 
   ## Options
 
@@ -52,7 +54,8 @@ defmodule NanoKVM.Display do
 
   @doc """
   Shows a picture: a `NanoKVM.Display.Canvas` the size of the display, or
-  rows of little-endian RGB565 pixels.
+  rows of little-endian RGB565 pixels. Only the rows that differ from the
+  framebuffer are written.
   """
   @spec show(GenServer.server(), Canvas.t() | binary()) :: :ok | {:error, term()}
   def show(server \\ __MODULE__, picture)
@@ -102,7 +105,7 @@ defmodule NanoKVM.Display do
   def handle_call({:show, pixels}, _from, state) do
     with {:ok, state} <- open(state),
          :ok <- check_size(pixels, state.info) do
-      written(write_rows(state.device, pixels, state.info), state)
+      written(show_changes(state.device, pixels, state.info), state)
     else
       error -> {:reply, error, state}
     end
@@ -121,7 +124,7 @@ defmodule NanoKVM.Display do
     with dir when is_binary(dir) <- state.framebuffer || find_framebuffer(state.graphics),
          {:ok, info} <- read_info(dir),
          {:ok, device} <-
-           File.open(Path.join(state.dev, Path.basename(dir)), [:write, :raw, :binary]) do
+           File.open(Path.join(state.dev, Path.basename(dir)), [:read, :write, :raw, :binary]) do
       {:ok, %{state | device: device, info: info}}
     else
       nil -> {:error, :no_framebuffer}
@@ -162,22 +165,63 @@ defmodule NanoKVM.Display do
       else: {:error, {:size, byte_size(pixels), info.width * info.height * 2}}
   end
 
-  # Rows the framebuffer pads to its stride go one by one.
-  defp write_rows(device, pixels, %{width: width, stride: stride}) when stride == width * 2 do
-    :file.pwrite(device, 0, pixels)
-  end
-
-  defp write_rows(device, pixels, info) do
+  # Writes the rows from the first to the last that differ from what the
+  # framebuffer holds.
+  defp show_changes(device, pixels, info) do
     row = info.width * 2
 
-    for(<<line::binary-size(^row) <- pixels>>, do: line)
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {line, y}, :ok ->
-      case :file.pwrite(device, y * info.stride, line) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
+    with {:ok, held} <- read_rows(device, info) do
+      case changed_rows(held, pixels, row) do
+        nil -> :ok
+        rows -> pwrite(device, row_writes(pixels, rows, row, info.stride))
       end
-    end)
+    end
+  end
+
+  # The rows the framebuffer holds; rows past its end are missing.
+  defp read_rows(device, %{width: width, height: height, stride: stride}) do
+    case :file.pread(device, 0, stride * height) do
+      {:ok, data} -> {:ok, unpad(data, width * 2, stride)}
+      :eof -> {:ok, <<>>}
+      error -> error
+    end
+  end
+
+  defp unpad(data, row, row), do: data
+
+  defp unpad(data, row, stride),
+    do: for(<<line::binary-size(^stride) <- data>>, into: <<>>, do: binary_part(line, 0, row))
+
+  defp changed_rows(same, same, _row), do: nil
+
+  defp changed_rows(held, pixels, row) do
+    differs? = fn y -> row_at(held, y, row) != row_at(pixels, y, row) end
+    rows = div(byte_size(pixels), row)
+    first = Enum.find(0..(rows - 1), differs?)
+    last = Enum.find((rows - 1)..first//-1, differs?)
+    first..last//1
+  end
+
+  defp row_at(data, y, row) when (y + 1) * row <= byte_size(data),
+    do: binary_part(data, y * row, row)
+
+  defp row_at(_data, _y, _row), do: nil
+
+  # One write for the rows when the framebuffer packs them, one each when it
+  # pads them to its stride.
+  defp row_writes(pixels, first..last//1, row, row) do
+    [{first * row, binary_part(pixels, first * row, (last - first + 1) * row)}]
+  end
+
+  defp row_writes(pixels, rows, row, stride) do
+    for y <- rows, do: {y * stride, binary_part(pixels, y * row, row)}
+  end
+
+  defp pwrite(device, writes) do
+    case :file.pwrite(device, writes) do
+      :ok -> :ok
+      {:error, {_written, reason}} -> {:error, reason}
+    end
   end
 
   defp fill_rect(device, info, rect, color) do
@@ -195,11 +239,7 @@ defmodule NanoKVM.Display do
 
   defp write_fill(device, info, {x0, y0, x1, y1}, color) do
     line = :binary.copy(<<color::little-16>>, x1 - x0)
-
-    case :file.pwrite(device, for(row <- y0..(y1 - 1), do: {row * info.stride + x0 * 2, line})) do
-      :ok -> :ok
-      {:error, {_written, reason}} -> {:error, reason}
-    end
+    pwrite(device, for(row <- y0..(y1 - 1), do: {row * info.stride + x0 * 2, line}))
   end
 
   # The framebuffer the panel's DRM driver emulates.

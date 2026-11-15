@@ -58,6 +58,38 @@ defmodule NanoKVM.DisplayTest do
     assert File.read!(Path.join(dev, "fb0")) == <<0::48, 0::16>> <> filled <> <<0::16>> <> filled
   end
 
+  test "puts back rows something else drew over, and writes what changed",
+       %{tmp_dir: tmp_dir} do
+    for stride <- [4, 6] do
+      {sysfs, dev} = fake(Path.join(tmp_dir, "#{stride}"), 2, 3, stride)
+      fb = Path.join(dev, "fb0")
+      # A framebuffer holds whole strides, padding after the last row too.
+      File.write!(fb, :binary.copy(<<0>>, 3 * stride))
+      display = start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil}, id: stride)
+
+      held = fn ->
+        for <<line::binary-size(^stride) <- File.read!(fb)>>,
+          into: <<>>,
+          do: binary_part(line, 0, 4)
+      end
+
+      picture = for value <- 1..6, into: <<>>, do: <<value::little-16>>
+      assert :ok = Display.show(display, picture)
+      assert held.() == picture
+
+      # A console draws over the last row; the same picture puts it back.
+      File.write!(fb, binary_part(File.read!(fb), 0, 2 * stride) <> :binary.copy(<<9>>, stride))
+      assert :ok = Display.show(display, picture)
+      assert held.() == picture
+
+      changed =
+        binary_part(picture, 0, 4) <> <<7::little-16, 8::little-16>> <> binary_part(picture, 8, 4)
+
+      assert :ok = Display.show(display, changed)
+      assert held.() == changed
+    end
+  end
+
   test "without a framebuffer, errors", %{tmp_dir: tmp_dir} do
     display =
       start_supervised!(

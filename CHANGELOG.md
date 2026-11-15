@@ -12,6 +12,8 @@
   `NanoKVM.USB` (one UAC2 function), `NanoKVM.Microphone` to play to the
   target's microphone, and `source: :usb` for `NanoKVM.Audio` to capture
   what the target plays to the speaker
+* `NanoKVM.Audio` messages name their source: `{NanoKVM.Audio, :hdmi, ...}`
+  or `{NanoKVM.Audio, :usb, ...}`
 
 ## v0.1.0
 

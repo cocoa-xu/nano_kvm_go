@@ -32,9 +32,9 @@ defmodule NanoKVM.AudioTest do
     kill_on_exit(audio)
 
     # The first program of a run can take a while to start.
-    assert_receive {Audio, {:format, %{rate: 48_000, channels: 2}}}, 1_000
-    assert_receive {Audio, {:pcm, "ABCD"}}
-    assert_receive {Audio, {:pcm, "EFGH"}}
+    assert_receive {Audio, :hdmi, {:format, %{rate: 48_000, channels: 2}}}, 1_000
+    assert_receive {Audio, :hdmi, {:pcm, "ABCD"}}
+    assert_receive {Audio, :hdmi, {:pcm, "EFGH"}}
     assert Audio.format(audio) == %{rate: 48_000, channels: 2}
 
     assert :ok = Audio.unsubscribe(audio)
@@ -74,7 +74,7 @@ defmodule NanoKVM.AudioTest do
 
     assert :ok = Audio.subscribe(audio)
     kill_on_exit(audio)
-    assert_receive {Audio, {:format, %{rate: 44_100, channels: 2}}}, 1_000
+    assert_receive {Audio, :hdmi, {:format, %{rate: 44_100, channels: 2}}}, 1_000
   end
 
   test "captures the USB speaker with source: :usb", %{tmp_dir: tmp_dir} do
@@ -92,7 +92,7 @@ defmodule NanoKVM.AudioTest do
 
     assert :ok = Audio.subscribe(audio)
     kill_on_exit(audio)
-    assert_receive {Audio, {:format, %{rate: 32_000, channels: 2}}}, 1_000
+    assert_receive {Audio, :usb, {:format, %{rate: 32_000, channels: 2}}}, 1_000
   end
 
   test "processes for both sources fit in one supervisor", %{program: program} do

@@ -20,16 +20,17 @@ defmodule NanoKVM.Audio do
 
   ## Messages
 
-  Subscribers receive:
+  Subscribers receive, with the `:source` of the process, so that one
+  subscriber can take both sources apart:
 
-    * `{NanoKVM.Audio, {:format, %{rate: rate, channels: 2}}}` when the
-      capture starts, when subscribing to a running one, and when the source
+    * `{NanoKVM.Audio, source, {:format, %{rate: rate, channels: 2}}}` when
+      the capture starts, when subscribing to a running one, and when the source
       switches to another rate. The bridge passes the source's rate on and
       reports it to the video capture driver, which the port program
       follows. Where the driver does not report it, the program measures the
       rate the samples arrive at and snaps it to a standard one (44.1 kHz,
       48 kHz, ...) within a few seconds.
-    * `{NanoKVM.Audio, {:pcm, data}}`, `:period_ms` of samples each
+    * `{NanoKVM.Audio, source, {:pcm, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more
   than a second of audio waiting misses the next until it catches up.
@@ -45,13 +46,14 @@ defmodule NanoKVM.Audio do
   @devices %{hdmi: "hw:CARD=LT7911EXC,DEV=0", usb: "hw:CARD=UAC2Gadget,DEV=0"}
 
   @type format() :: %{rate: pos_integer(), channels: pos_integer()}
+  @type source() :: :hdmi | :usb
 
   @typedoc "A message to subscribers, see the module documentation."
-  @type message() :: {NanoKVM.Audio, {:format, format()} | {:pcm, binary()}}
+  @type message() :: {NanoKVM.Audio, source(), {:format, format()} | {:pcm, binary()}}
 
   @type option() ::
           {:name, GenServer.name()}
-          | {:source, :hdmi | :usb}
+          | {:source, source()}
           | {:device, String.t()}
           | {:rate, pos_integer()}
           | {:period_ms, pos_integer()}
@@ -101,6 +103,7 @@ defmodule NanoKVM.Audio do
     end
 
     config = %{
+      source: source,
       device: Keyword.get(opts, :device, @devices[source]),
       rate: Keyword.get(opts, :rate, 48_000),
       period_ms: Keyword.get(opts, :period_ms, 20),
@@ -127,7 +130,7 @@ defmodule NanoKVM.Audio do
     if Map.has_key?(state.subscribers, pid) do
       {:reply, :ok, state}
     else
-      if state.format, do: send(pid, {__MODULE__, {:format, state.format}})
+      if state.format, do: send(pid, {__MODULE__, state.config.source, {:format, state.format}})
       subscribers = Map.put(state.subscribers, pid, Process.monitor(pid))
       {:reply, :ok, ensure_running(%{state | subscribers: subscribers})}
     end
@@ -170,7 +173,8 @@ defmodule NanoKVM.Audio do
 
   defp handle_packet({:pcm, pcm}, state) do
     Enum.each(state.subscribers, fn {pid, _monitor} ->
-      if keeping_up?(pid, state.config), do: send(pid, {__MODULE__, {:pcm, pcm}})
+      if keeping_up?(pid, state.config),
+        do: send(pid, {__MODULE__, state.config.source, {:pcm, pcm}})
     end)
 
     state
@@ -178,7 +182,7 @@ defmodule NanoKVM.Audio do
 
   defp handle_packet({:format, format}, state) do
     Enum.each(state.subscribers, fn {pid, _monitor} ->
-      send(pid, {__MODULE__, {:format, format}})
+      send(pid, {__MODULE__, state.config.source, {:format, format}})
     end)
 
     %{state | format: format}

@@ -160,12 +160,18 @@ NanoKVM.Storage.eject()
 ```elixir
 alias NanoKVM.Display.Canvas
 
-children = [NanoKVM.Display, NanoKVM.Touch, NanoKVM.Button]
+children = [NanoKVM.Display, NanoKVM.Backlight, NanoKVM.Touch, NanoKVM.Button]
 
 Canvas.new(240, 284, Canvas.rgb(0, 0, 0))
 |> Canvas.rect(0, 0, 240, 40, Canvas.rgb(0, 80, 160))
 |> Canvas.text(8, 4, "NanoKVM-Go", Canvas.rgb(255, 255, 255), scale: 2)
 |> NanoKVM.Display.show()
+
+# Brightness on a lightness curve, on the kernel's driver at 2.16 kHz...
+NanoKVM.Backlight.set_brightness(60)
+# ...or on the PWM at a frequency and duty cycle of your own
+NanoKVM.Backlight.set_pwm(frequency: 25_000, duty: 0.3)
+NanoKVM.Backlight.release()
 
 :ok = NanoKVM.Touch.subscribe()
 receive do: ({NanoKVM.Touch, {:down, x, y}} -> {x, y})

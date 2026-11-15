@@ -1,8 +1,8 @@
 defmodule NanoKVM.Display do
   @moduledoc """
   The NanoKVM-Go's LCD: 240 × 284 pixels in portrait, through the Linux
-  framebuffer of its panel, and the panel's backlight. The panel hides the
-  last 14 rows: 240 × 270 of them show.
+  framebuffer of its panel. The panel hides the last 14 rows: 240 × 270 of
+  them show. Its light is `NanoKVM.Backlight`.
 
       alias NanoKVM.Display.Canvas
 
@@ -13,8 +13,6 @@ defmodule NanoKVM.Display do
       |> NanoKVM.Display.show()
 
       NanoKVM.Display.fill(100, 100, 8, 8, Canvas.rgb(255, 0, 0))
-      NanoKVM.Display.set_brightness(40)
-      NanoKVM.Display.backlight(false)
 
   The kernel sends what changed to the panel. Without the framebuffer (no
   panel, or a system without the driver) the calls return an error.
@@ -24,8 +22,6 @@ defmodule NanoKVM.Display do
     * `:name` - the name to register, `NanoKVM.Display` by default
     * `:framebuffer` - the framebuffer's sysfs directory, by default the one
       of the panel's driver (`panel-mipi-dbi`)
-    * `:backlight` - the backlight's sysfs directory,
-      `/sys/class/backlight/backlight` by default
   """
   use GenServer
 
@@ -36,7 +32,7 @@ defmodule NanoKVM.Display do
   @type info() :: %{width: pos_integer(), height: pos_integer(), stride: pos_integer()}
 
   @type option() ::
-          {:name, GenServer.name()} | {:framebuffer, Path.t()} | {:backlight, Path.t()}
+          {:name, GenServer.name()} | {:framebuffer, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
@@ -80,35 +76,10 @@ defmodule NanoKVM.Display do
     GenServer.call(server, {:fill, {x, y, width, height}, color})
   end
 
-  @doc """
-  Sets the backlight's brightness in percent: 0 is dark, 100 the brightest.
-  The NanoKVM-Go's levels follow lightness, so 50 looks half as bright as
-  100. A backlight that only turns on and off is on from 50.
-  """
-  @spec set_brightness(GenServer.server(), 0..100) :: :ok | {:error, term()}
-  def set_brightness(server \\ __MODULE__, percent) when percent in 0..100 do
-    GenServer.call(server, {:set_brightness, percent})
-  end
-
-  @doc """
-  The backlight's brightness in percent, see `set_brightness/2`.
-  """
-  @spec brightness(GenServer.server()) :: {:ok, 0..100} | {:error, term()}
-  def brightness(server \\ __MODULE__), do: GenServer.call(server, :brightness)
-
-  @doc """
-  Turns the backlight on or off, keeping its brightness.
-  """
-  @spec backlight(GenServer.server(), boolean()) :: :ok | {:error, term()}
-  def backlight(server \\ __MODULE__, on) when is_boolean(on) do
-    GenServer.call(server, {:backlight, on})
-  end
-
   @impl GenServer
   def init(opts) do
     state = %{
       framebuffer: Keyword.get_lazy(opts, :framebuffer, &find_framebuffer/0),
-      backlight: Keyword.get(opts, :backlight, "/sys/class/backlight/backlight"),
       # For tests: where the device nodes are.
       dev: Keyword.get(opts, :dev, "/dev"),
       device: nil,
@@ -141,32 +112,6 @@ defmodule NanoKVM.Display do
       {:ok, state} -> {:reply, fill_rect(state.device, state.info, rect, color), state}
       error -> {:reply, error, state}
     end
-  end
-
-  def handle_call({:set_brightness, percent}, _from, state) do
-    reply =
-      with {:ok, max} <- read_integer(state.backlight, "max_brightness") do
-        level = round(percent * max / 100)
-        File.write(Path.join(state.backlight, "brightness"), Integer.to_string(level))
-      end
-
-    {:reply, reply, state}
-  end
-
-  def handle_call(:brightness, _from, state) do
-    reply =
-      with {:ok, max} <- read_integer(state.backlight, "max_brightness"),
-           {:ok, level} <- read_integer(state.backlight, "brightness") do
-        if max > 0, do: {:ok, round(level * 100 / max)}, else: {:error, :no_levels}
-      end
-
-    {:reply, reply, state}
-  end
-
-  def handle_call({:backlight, on}, _from, state) do
-    # bl_power: 0 on, 4 off (FB_BLANK_POWERDOWN).
-    {:reply, File.write(Path.join(state.backlight, "bl_power"), if(on, do: "0", else: "4")),
-     state}
   end
 
   defp open(%{device: device} = state) when device != nil, do: {:ok, state}
@@ -243,16 +188,6 @@ defmodule NanoKVM.Display do
     case :file.pwrite(device, for(row <- y0..(y1 - 1), do: {row * info.stride + x0 * 2, line})) do
       :ok -> :ok
       {:error, {_written, reason}} -> {:error, reason}
-    end
-  end
-
-  defp read_integer(dir, name) do
-    with {:ok, text} <- File.read(Path.join(dir, name)),
-         {value, _rest} <- Integer.parse(String.trim(text)) do
-      {:ok, value}
-    else
-      {:error, reason} -> {:error, reason}
-      :error -> {:error, {:not_a_number, name}}
     end
   end
 

@@ -66,7 +66,7 @@ defmodule NanoKVM.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "CHANGELOG.md"],
+      extras: ["README.md", "CHANGELOG.md", "LICENSE"],
       source_ref: "v#{@version}",
       groups_for_modules: [
         "Video and audio": [
@@ -81,6 +81,7 @@ defmodule NanoKVM.MixProject do
         "LCD, touch panel, button": [
           NanoKVM.Display,
           NanoKVM.Display.Canvas,
+          NanoKVM.Backlight,
           NanoKVM.Touch,
           NanoKVM.Button
         ]

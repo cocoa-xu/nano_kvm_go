@@ -9,7 +9,7 @@ defmodule NanoKVM.HID.Descriptor do
           report_desc: binary()
         }
 
-  @type pointer_mode() :: :absolute | :stylus | :touch
+  @type pointer_mode() :: NanoKVM.HID.pointer_mode()
 
   # Boot keyboard: modifiers, reserved, 6 keys of usages 0..0xE7 (the
   # logical maximum in two bytes: one would read as negative); LED output.

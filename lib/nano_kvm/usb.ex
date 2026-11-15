@@ -107,7 +107,7 @@ defmodule NanoKVM.USB do
   @type function_spec() ::
           function_name()
           | {:microphone | :speaker, [audio_option()]}
-          | {:mouse, [mode: NanoKVM.HID.Descriptor.pointer_mode()]}
+          | {:mouse, [mode: NanoKVM.HID.pointer_mode()]}
 
   @type audio_format() :: %{
           channels: 1..8,

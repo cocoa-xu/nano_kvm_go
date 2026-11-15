@@ -59,6 +59,9 @@ defmodule NanoKVM.HID do
   @kinds [:keyboard, :mouse, :relative_mouse]
   @buttons %{left: 1, right: 2, middle: 4, back: 8, forward: 16}
 
+  @typedoc "How the absolute pointer reports: as a mouse, a pen or a touch screen."
+  @type pointer_mode() :: :absolute | :stylus | :touch
+
   @typedoc "A `KeyboardEvent.code` value or a HID usage."
   @type key() :: Keymap.code() | 0x04..0xDD | 0xE0..0xE7
 
@@ -182,7 +185,7 @@ defmodule NanoKVM.HID do
   @doc """
   The mode of the absolute pointer: `:absolute`, `:stylus` or `:touch`.
   """
-  @spec pointer_mode(GenServer.server()) :: Descriptor.pointer_mode()
+  @spec pointer_mode(GenServer.server()) :: pointer_mode()
   def pointer_mode(server \\ __MODULE__), do: GenServer.call(server, :pointer_mode)
 
   @impl GenServer

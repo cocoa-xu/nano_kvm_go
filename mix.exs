@@ -1,11 +1,11 @@
-defmodule NanoKVM.MixProject do
+defmodule NanoKVMGo.MixProject do
   use Mix.Project
 
   @version "0.1.0"
 
   def project do
     [
-      app: :nano_kvm,
+      app: :nano_kvm_go,
       version: @version,
       elixir: "~> 1.15",
       description: description(),
@@ -72,29 +72,29 @@ defmodule NanoKVM.MixProject do
       source_ref: "v#{@version}",
       groups_for_modules: [
         "Video and audio": [
-          NanoKVM.Video,
-          NanoKVM.Video.Input,
-          NanoKVM.EDID,
-          NanoKVM.Audio,
-          NanoKVM.Microphone
+          NanoKVMGo.Video,
+          NanoKVMGo.Video.Input,
+          NanoKVMGo.EDID,
+          NanoKVMGo.Audio,
+          NanoKVMGo.Microphone
         ],
-        "Keyboard and mouse": [NanoKVM.HID, NanoKVM.HID.Keymap, NanoKVM.HID.Report],
-        USB: [NanoKVM.USB, NanoKVM.Storage],
+        "Keyboard and mouse": [NanoKVMGo.HID, NanoKVMGo.HID.Keymap, NanoKVMGo.HID.Report],
+        USB: [NanoKVMGo.USB, NanoKVMGo.Storage],
         "LCD, touch panel, button": [
-          NanoKVM.Display,
-          NanoKVM.Display.Canvas,
-          NanoKVM.Backlight,
-          NanoKVM.Touch,
-          NanoKVM.Button
+          NanoKVMGo.Display,
+          NanoKVMGo.Display.Canvas,
+          NanoKVMGo.Backlight,
+          NanoKVMGo.Touch,
+          NanoKVMGo.Button
         ],
-        "The device": [NanoKVM.Hardware, NanoKVM.Metrics, NanoKVM.Expansion]
+        "The device": [NanoKVMGo.Hardware, NanoKVMGo.Metrics, NanoKVMGo.Expansion]
       ]
     ]
   end
 
   defp make_error_message do
     """
-    Could not build the nano_kvm_video port program. It needs a Linux C
+    Could not build the nano_kvm_go_video port program. It needs a Linux C
     toolchain with the V4L2 headers; Nerves provides one for the NanoKVM-Go.
     """
   end

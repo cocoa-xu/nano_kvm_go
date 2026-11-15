@@ -1,4 +1,4 @@
-defmodule NanoKVM.FakeConfigfs do
+defmodule NanoKVMGo.FakeConfigfs do
   @moduledoc false
   # A gadget directory on a plain file system, bound to the device controller
   # "udc.0", and the directory that lists the controllers.

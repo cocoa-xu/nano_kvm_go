@@ -6,7 +6,7 @@
 /.elixir_ls/
 erl_crash.dump
 *.ez
-/nano_kvm-*.tar
+/nano_kvm_go-*.tar
 
 # Built by the Makefile into the build directory, never in the sources
 /priv/

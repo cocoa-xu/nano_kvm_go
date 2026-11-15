@@ -1,4 +1,4 @@
-defmodule NanoKVM.FakeGPIO do
+defmodule NanoKVMGo.FakeGPIO do
   @moduledoc false
   # Circuits.GPIO for tests: the lines' values live in an Agent registered
   # under this module's name, which also sends each call that changes

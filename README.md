@@ -204,8 +204,8 @@ serial number. With the board's options, `Kuroneko.Gadget` keeps new
 addresses there:
 
 ```elixir
-NanoKVMGo.USB.default_network_addresses("6a1a78455040f186")
-#=> %{device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d"}
+NanoKVMGo.USB.default_network_addresses("0123456789abcdef")
+#=> %{device_address: "9e:9f:51:11:f7:b2", host_address: "7a:78:1f:1f:1d:dd"}
 
 # Now and at the next boots; :default goes back to the address made from the serial number.
 :ok = Kuroneko.Gadget.set_network_addresses(host_address: "02:12:34:56:78:9a")

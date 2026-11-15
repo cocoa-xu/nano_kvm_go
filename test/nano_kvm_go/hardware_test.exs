@@ -49,7 +49,7 @@ defmodule NanoKVMGo.HardwareTest do
     processor\t: 1
     #{core}
     Hardware\t: Generic DT based system
-    Serial\t\t: 6a1a78455040f186
+    Serial\t\t: 0123456789abcdef
     """)
 
     write(root, "proc/meminfo", "MemTotal:         498428 kB\nMemFree:          217612 kB\n")
@@ -61,7 +61,7 @@ defmodule NanoKVMGo.HardwareTest do
              soc: "Axera AX620QE",
              cpu: %{model: "Cortex-A53", cores: 2},
              memory: 510_390_272,
-             serial_number: "6a1a78455040f186",
+             serial_number: "0123456789abcdef",
              linux: "7.3.0"
            }
   end

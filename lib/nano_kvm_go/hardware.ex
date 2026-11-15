@@ -10,7 +10,7 @@ defmodule NanoKVMGo.Hardware do
       #=>   soc: "Axera AX620QE",
       #=>   cpu: %{model: "Cortex-A53", cores: 2},
       #=>   memory: 510_390_272,
-      #=>   serial_number: "6a1a78455040f186",
+      #=>   serial_number: "0123456789abcdef",
       #=>   linux: "7.3.0"
       #=> }
 

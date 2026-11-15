@@ -86,8 +86,8 @@ defmodule NanoKVMGo.USB do
   number (`boardid`'s) for the NanoKVM's end and the next six for the
   computer's, as locally administered unicast addresses.
 
-      iex> NanoKVMGo.USB.default_network_addresses("6a1a78455040f186")
-      %{device_address: "ea:52:ab:b6:67:a7", host_address: "2e:53:95:27:a5:9d"}
+      iex> NanoKVMGo.USB.default_network_addresses("0123456789abcdef")
+      %{device_address: "9e:9f:51:11:f7:b2", host_address: "7a:78:1f:1f:1d:dd"}
   """
   @spec default_network_addresses(String.t()) :: network_addresses()
   def default_network_addresses(serial_number) when is_binary(serial_number) do

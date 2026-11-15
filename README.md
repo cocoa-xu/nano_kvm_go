@@ -8,6 +8,8 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   to JPEG for an MJPEG stream
 * **Audio** - the audio of that input, as 16-bit stereo PCM, at the rate the
   source sends
+* **Two-way USB audio** - a microphone and a speaker for the target computer:
+  sound for its microphone, and what it plays to the speaker
 * **EDID** - the EDID the input presents to the source, to read or replace
 * **Keyboard and mouse** - a boot keyboard and an absolute mouse for the
   target computer, over USB
@@ -28,9 +30,9 @@ def deps do
 end
 ```
 
-The programs (`nano_kvm_video`, `nano_kvm_audio` and `nano_kvm_edid`, C) are
-built for the target by the Nerves toolchain; the audio one links alsa-lib,
-which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the
+The programs (`nano_kvm_video`, `nano_kvm_audio`, `nano_kvm_playback` and
+`nano_kvm_edid`, C) are built for the target by the Nerves toolchain; the audio
+ones link alsa-lib, which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the
 rest of the library still compiles and its tests run.
 
 ## Usage
@@ -85,6 +87,25 @@ end
 Samples are interleaved signed 16-bit little endian stereo, at the rate in
 the latest `{NanoKVM.Audio, {:format, format}}` message, and only come while
 the source sends audio.
+
+### USB microphone and speaker
+
+With the `:microphone` and `:speaker` USB functions the target computer sees
+a USB sound card (48 kHz; the microphone mono, the speaker stereo):
+
+```elixir
+children = [
+  {NanoKVM.USB, functions: [:storage, :microphone, :speaker]},
+  NanoKVM.Microphone,
+  {NanoKVM.Audio, source: :usb, name: MyApp.Speaker}
+]
+
+# What the target hears from its microphone: 48 kHz mono S16_LE.
+NanoKVM.Microphone.play(pcm)
+
+# What the target plays to the speaker, as with the HDMI/DisplayPort audio.
+:ok = NanoKVM.Audio.subscribe(MyApp.Speaker)
+```
 
 ### Keyboard and mouse
 

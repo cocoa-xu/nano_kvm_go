@@ -7,6 +7,10 @@
 * `NanoKVM.Audio` takes the sample rate from the bridge, through the video
   capture driver, and measures it only where the driver does not report it
 * `NanoKVM.temperature/0`: the SoC temperature
+* Two-way USB audio: the `:microphone` and `:speaker` functions of
+  `NanoKVM.USB` (one UAC2 function), `NanoKVM.Microphone` to play to the
+  target's microphone, and `source: :usb` for `NanoKVM.Audio` to capture
+  what the target plays to the speaker
 
 ## v0.1.0
 

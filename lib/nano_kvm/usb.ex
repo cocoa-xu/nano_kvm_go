@@ -26,7 +26,10 @@ defmodule NanoKVM.USB do
 
   When the functions cannot be set up at start, the process logs the error
   and runs on, so that the rest of the application does not go down with
-  it; `functions/1` tells what the gadget has.
+  it; `functions/1` tells what the gadget has. A change the USB controller
+  refuses (it has seven endpoints for data to the computer: the network
+  takes two, the audio two and each other function one) leaves the
+  functions as they were.
 
       children = [{NanoKVM.USB, functions: [:keyboard, :mouse, :storage]}]
 
@@ -163,11 +166,18 @@ defmodule NanoKVM.USB do
   defp change(state, present, wanted) do
     Logger.info("nano_kvm: USB functions #{inspect(wanted)}, reconnecting the gadget")
     udc = bound_udc(state.gadget)
-    {present, wanted} = {units(present), units(wanted)}
 
-    with :ok <- unbind(state.gadget, udc),
-         :ok <- each(present -- wanted, &remove(state.gadget, &1)),
-         :ok <- each(wanted -- present, &add(state.gadget, &1)) do
+    with {:error, reason} <- switch(state, udc, units(present), units(wanted)) do
+      Logger.error("nano_kvm: USB functions #{inspect(wanted)} refused: #{inspect(reason)}")
+      _ = switch(state, udc, units(present(state.gadget)), units(present))
+      {:error, reason}
+    end
+  end
+
+  defp switch(state, udc, from, to) do
+    with :ok <- unbind(state.gadget, bound_udc(state.gadget)),
+         :ok <- each(from -- to, &remove(state.gadget, &1)),
+         :ok <- each(to -- from, &add(state.gadget, &1)) do
       bind(state, udc)
     end
   end
@@ -235,6 +245,8 @@ defmodule NanoKVM.USB do
       c_chmask: mask.(:speaker),
       c_srate: "48000",
       c_ssize: "2",
+      # No feedback endpoint: the speaker follows the computer's clock.
+      c_sync: "adaptive",
       function_name: "NanoKVM-Go Audio"
     )
   end

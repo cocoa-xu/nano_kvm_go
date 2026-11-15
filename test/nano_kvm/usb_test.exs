@@ -72,6 +72,7 @@ defmodule NanoKVM.USBTest do
     assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_chmask") == "3"
     assert FakeConfigfs.read(gadget, "functions/uac2.audio/p_srate") == "48000"
     assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_ssize") == "2"
+    assert FakeConfigfs.read(gadget, "functions/uac2.audio/c_sync") == "adaptive"
 
     assert File.read_link!(Path.join(gadget, "configs/c.1/uac2.audio")) ==
              Path.join(gadget, "functions/uac2.audio")
@@ -109,6 +110,21 @@ defmodule NanoKVM.USBTest do
 
     assert NanoKVM.USB.functions(pid) == [:microphone]
     assert FakeConfigfs.read(gadget, "UDC") == "untouched"
+  end
+
+  test "goes back to the functions it had when the controller refuses", %{
+    gadget: gadget,
+    udc_class: udc_class
+  } do
+    pid = start_supervised!({NanoKVM.USB, gadget: gadget, udc_class: udc_class, name: nil})
+
+    # Binding fails: the controller name cannot be written.
+    File.rm!(Path.join(gadget, "UDC"))
+    File.mkdir!(Path.join(gadget, "UDC"))
+
+    assert {:error, :eisdir} = NanoKVM.USB.configure(pid, [:microphone])
+    assert NanoKVM.USB.functions(pid) == []
+    refute File.exists?(Path.join(gadget, "configs/c.1/uac2.audio"))
   end
 
   test "refuses unknown functions", %{gadget: gadget, udc_class: udc_class} do

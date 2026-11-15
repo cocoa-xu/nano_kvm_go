@@ -118,6 +118,7 @@ defmodule NanoKVM.Video do
   The EDID the input presents to the source: one to four blocks of 128 bytes.
 
   The first read takes over a second, as the bridge reads its flash.
+  `NanoKVM.EDID.decode/1` tells what it says.
   """
   @spec edid() :: {:ok, binary()} | {:error, term()}
   def edid, do: EDID.read(edid_program(), Devices.capture())

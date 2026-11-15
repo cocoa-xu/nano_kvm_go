@@ -1,7 +1,8 @@
 defmodule NanoKVM.Display do
   @moduledoc """
   The NanoKVM-Go's LCD: 240 × 284 pixels in portrait, through the Linux
-  framebuffer of its panel, and the panel's backlight.
+  framebuffer of its panel, and the panel's backlight. The panel hides the
+  last 14 rows: 240 × 270 of them show.
 
       alias NanoKVM.Display.Canvas
 
@@ -11,6 +12,8 @@ defmodule NanoKVM.Display do
       |> Canvas.text(8, 8, "Hello", Canvas.rgb(255, 255, 255), scale: 2)
       |> NanoKVM.Display.show()
 
+      NanoKVM.Display.fill(100, 100, 8, 8, Canvas.rgb(255, 0, 0))
+      NanoKVM.Display.set_brightness(40)
       NanoKVM.Display.backlight(false)
 
   The kernel sends what changed to the panel. Without the framebuffer (no
@@ -61,7 +64,40 @@ defmodule NanoKVM.Display do
   def show(server, pixels) when is_binary(pixels), do: GenServer.call(server, {:show, pixels})
 
   @doc """
-  Turns the backlight on or off.
+  Fills a rectangle with a colour and leaves the rest of the picture: quicker
+  than showing a whole one for a small change. What falls outside the
+  display is left out.
+  """
+  @spec fill(
+          GenServer.server(),
+          integer(),
+          integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          Canvas.color()
+        ) :: :ok | {:error, term()}
+  def fill(server \\ __MODULE__, x, y, width, height, color) do
+    GenServer.call(server, {:fill, {x, y, width, height}, color})
+  end
+
+  @doc """
+  Sets the backlight's brightness in percent: 0 is dark, 100 the brightest.
+  The NanoKVM-Go's levels follow lightness, so 50 looks half as bright as
+  100. A backlight that only turns on and off is on from 50.
+  """
+  @spec set_brightness(GenServer.server(), 0..100) :: :ok | {:error, term()}
+  def set_brightness(server \\ __MODULE__, percent) when percent in 0..100 do
+    GenServer.call(server, {:set_brightness, percent})
+  end
+
+  @doc """
+  The backlight's brightness in percent, see `set_brightness/2`.
+  """
+  @spec brightness(GenServer.server()) :: {:ok, 0..100} | {:error, term()}
+  def brightness(server \\ __MODULE__), do: GenServer.call(server, :brightness)
+
+  @doc """
+  Turns the backlight on or off, keeping its brightness.
   """
   @spec backlight(GenServer.server(), boolean()) :: :ok | {:error, term()}
   def backlight(server \\ __MODULE__, on) when is_boolean(on) do
@@ -98,6 +134,33 @@ defmodule NanoKVM.Display do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:fill, rect, color}, _from, state) do
+    case open(state) do
+      {:ok, state} -> {:reply, fill_rect(state.device, state.info, rect, color), state}
+      error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:set_brightness, percent}, _from, state) do
+    reply =
+      with {:ok, max} <- read_integer(state.backlight, "max_brightness") do
+        level = round(percent * max / 100)
+        File.write(Path.join(state.backlight, "brightness"), Integer.to_string(level))
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call(:brightness, _from, state) do
+    reply =
+      with {:ok, max} <- read_integer(state.backlight, "max_brightness"),
+           {:ok, level} <- read_integer(state.backlight, "brightness") do
+        if max > 0, do: {:ok, round(level * 100 / max)}, else: {:error, :no_levels}
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:backlight, on}, _from, state) do
@@ -159,6 +222,38 @@ defmodule NanoKVM.Display do
         error -> {:halt, error}
       end
     end)
+  end
+
+  defp fill_rect(device, info, rect, color) do
+    case clip(rect, info) do
+      nil -> :ok
+      clipped -> write_fill(device, info, clipped, color)
+    end
+  end
+
+  defp clip({x, y, width, height}, info) do
+    {x0, y0} = {max(x, 0), max(y, 0)}
+    {x1, y1} = {min(x + width, info.width), min(y + height, info.height)}
+    if x1 > x0 and y1 > y0, do: {x0, y0, x1, y1}
+  end
+
+  defp write_fill(device, info, {x0, y0, x1, y1}, color) do
+    line = :binary.copy(<<color::little-16>>, x1 - x0)
+
+    case :file.pwrite(device, for(row <- y0..(y1 - 1), do: {row * info.stride + x0 * 2, line})) do
+      :ok -> :ok
+      {:error, {_written, reason}} -> {:error, reason}
+    end
+  end
+
+  defp read_integer(dir, name) do
+    with {:ok, text} <- File.read(Path.join(dir, name)),
+         {value, _rest} <- Integer.parse(String.trim(text)) do
+      {:ok, value}
+    else
+      {:error, reason} -> {:error, reason}
+      :error -> {:error, {:not_a_number, name}}
+    end
   end
 
   # The framebuffer the panel's DRM driver emulates.

@@ -69,7 +69,13 @@ defmodule NanoKVM.MixProject do
       extras: ["README.md", "CHANGELOG.md"],
       source_ref: "v#{@version}",
       groups_for_modules: [
-        "Video and audio": [NanoKVM.Video, NanoKVM.Video.Input, NanoKVM.Audio],
+        "Video and audio": [
+          NanoKVM.Video,
+          NanoKVM.Video.Input,
+          NanoKVM.EDID,
+          NanoKVM.Audio,
+          NanoKVM.Microphone
+        ],
         "Keyboard and mouse": [NanoKVM.HID, NanoKVM.HID.Keymap, NanoKVM.HID.Report],
         USB: [NanoKVM.USB, NanoKVM.Storage]
       ]

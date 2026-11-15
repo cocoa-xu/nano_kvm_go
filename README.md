@@ -68,6 +68,9 @@ The MJPEG stream is at `http://<device>:8088/stream.mjpg`.
 
 ```elixir
 {:ok, edid} = NanoKVM.Video.edid()
+{:ok, %{name: "NanoKVM-Go", modes: [%{width: 3840, height: 2160, refresh: 30.0} | _]}} =
+  NanoKVM.EDID.decode(edid)
+
 :ok = NanoKVM.Video.set_edid(other_edid)
 ```
 

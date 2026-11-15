@@ -3,7 +3,8 @@
 ## Unreleased
 
 * `NanoKVM.Video.edid/0` and `NanoKVM.Video.set_edid/1`: the EDID of the
-  input, kept in the bridge's flash
+  input, kept in the bridge's flash; `NanoKVM.EDID.decode/1` for its name and
+  modes
 * `NanoKVM.Audio` takes the sample rate from the bridge, through the video
   capture driver, and measures it only where the driver does not report it
 * `NanoKVM.temperature/0`: the SoC temperature

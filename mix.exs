@@ -85,7 +85,13 @@ defmodule NanoKVMGo.MixProject do
           NanoKVMGo.Touch,
           NanoKVMGo.Button
         ],
-        "The device": [NanoKVMGo.Hardware, NanoKVMGo.Metrics, NanoKVMGo.Expansion, NanoKVMGo.USB]
+        "The device": [
+          NanoKVMGo.Hardware,
+          NanoKVMGo.Metrics,
+          NanoKVMGo.CMA,
+          NanoKVMGo.Expansion,
+          NanoKVMGo.USB
+        ]
       ]
     ]
   end

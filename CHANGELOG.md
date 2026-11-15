@@ -43,6 +43,9 @@
   partitions and their use
 * `NanoKVMGo.Metrics`: CPU, memory, temperature, network traffic, load and
   uptime each second, with five minutes of history, for subscribers
+* `NanoKVMGo.CMA`: the sizes of the contiguous memory pools of video and the
+  NPU, kept in the U-Boot environment for the next boots, and an opt-in
+  trial that the boots after it revert unless the firmware is validated
 
 ## v0.1.0
 

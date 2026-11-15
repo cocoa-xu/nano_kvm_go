@@ -212,6 +212,30 @@ NanoKVMGo.USB.default_network_addresses("0123456789abcdef")
 :ok = Kuroneko.Gadget.set_network_addresses(host_address: :default)
 ```
 
+## Memory for video and the NPU
+
+Video capture with its encoders and the NPU take their buffers from
+contiguous memory (CMA) pools, which U-Boot sizes at every boot: 192 MiB
+for video and 64 MiB for the NPU on the Go+. 4K needs video's 192 MiB; at
+lower resolutions or without H.264 some of it can go to the NPU, or the
+other way around:
+
+```elixir
+NanoKVMGo.CMA.sizes()
+#=> %{video: 192, npu: 64}
+
+# At the next boots; multiples of 8 MiB, together at most half of the DRAM.
+:ok = NanoKVMGo.CMA.put_sizes(%{video: 160, npu: 96})
+
+# The NPU off, its memory back to Linux; :default for the device tree's size.
+:ok = NanoKVMGo.CMA.put_sizes(%{video: :default, npu: 0})
+
+# Only the next boot, unless the firmware is validated in it.
+:ok = NanoKVMGo.CMA.put_sizes(%{video: 128, npu: 128}, trial: true)
+NanoKVMGo.CMA.trial()
+#=> %{state: :pending, sizes: %{video: 128, npu: 128}}
+```
+
 ## The expansion lines
 
 The auxiliary USB-C port, the one with the lightning icon, carries two of

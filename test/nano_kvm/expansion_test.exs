@@ -62,6 +62,18 @@ defmodule NanoKVM.ExpansionTest do
     assert_received {FakeKV, %{"nanokvm_expansion" => ""}}
   end
 
+  test "takes a mode with options, without a server", %{opts: opts, device: device} do
+    start(Keyword.put(opts, :name, Expansion))
+
+    assert :ok = Expansion.set_mode(:uart, persist: false)
+    assert mode(device) == "uart"
+    refute_received {FakeKV, _}
+
+    assert :ok = Expansion.set_mode(Expansion, :gpio)
+    assert mode(device) == "gpio"
+    assert_received {FakeKV, %{"nanokvm_expansion" => "gpio"}}
+  end
+
   test "refuses modes the kernel does not offer", %{opts: opts, device: device} do
     File.write!(Path.join(device, "modes"), "off uart\n")
     pid = start(opts)

@@ -113,12 +113,18 @@ defmodule NanoKVM.Expansion do
   def info(server \\ __MODULE__), do: GenServer.call(server, :info)
 
   @doc """
-  Sets the mode, kept for the next boots unless `persist: false`.
+  Sets the mode, kept for the next boots unless `persist: false`:
+  `set_mode(:uart)`, `set_mode(:uart, persist: false)` or
+  `set_mode(server, :uart, persist: false)`.
   """
   @spec set_mode(GenServer.server(), mode(), [{:persist, boolean()}]) :: :ok | {:error, term()}
-  def set_mode(server \\ __MODULE__, mode, opts \\ []) when is_atom(mode) and is_list(opts) do
-    GenServer.call(server, {:set_mode, mode, Keyword.get(opts, :persist, true)})
-  end
+  def set_mode(server \\ __MODULE__, mode, opts \\ [])
+
+  def set_mode(mode, opts, []) when is_atom(mode) and is_list(opts),
+    do: set_mode(__MODULE__, mode, opts)
+
+  def set_mode(server, mode, opts) when is_atom(mode) and is_list(opts),
+    do: GenServer.call(server, {:set_mode, mode, Keyword.get(opts, :persist, true)})
 
   @doc """
   Reads a GPIO line, making it an input.

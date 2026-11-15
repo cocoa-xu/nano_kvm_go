@@ -83,7 +83,16 @@ defmodule NanoKVM.USB do
   # The configfs attributes of the audio directions start with these.
   @prefix %{microphone: "p_", speaker: "c_"}
   # Channel positions: front left and right, center, LFE, back, side.
-  @channel_masks %{1 => 0x1, 2 => 0x3, 3 => 0x7, 4 => 0x33, 5 => 0x37, 6 => 0x3F, 7 => 0x13F, 8 => 0x63F}
+  @channel_masks %{
+    1 => 0x1,
+    2 => 0x3,
+    3 => 0x7,
+    4 => 0x33,
+    5 => 0x37,
+    6 => 0x3F,
+    7 => 0x13F,
+    8 => 0x63F
+  }
   @max_rates 10
   # The largest packets the USB controller (DWC3) takes: its smallest
   # transmit FIFO holds 832 bytes of one, and the receive FIFO three of 682.
@@ -219,7 +228,13 @@ defmodule NanoKVM.USB do
 
   def handle_call(:audio, _from, state) do
     present = present(state.gadget)
-    {:reply, for({function, format} when function in @audio <- present, into: %{}, do: {function, format}), state}
+
+    {:reply,
+     for(
+       {function, format} when function in @audio <- present,
+       into: %{},
+       do: {function, format}
+     ), state}
   end
 
   defp apply_functions(state, functions) do
@@ -259,7 +274,11 @@ defmodule NanoKVM.USB do
   # settings for a function that is not in use, so others mean a new
   # function.
   defp units(functions) do
-    case for({function, format} when function in @audio <- functions, into: %{}, do: {function, format}) do
+    case for(
+           {function, format} when function in @audio <- functions,
+           into: %{},
+           do: {function, format}
+         ) do
       audio when audio == %{} -> functions
       audio -> Enum.reject(functions, &(name(&1) in @audio)) ++ [{:audio, audio}]
     end

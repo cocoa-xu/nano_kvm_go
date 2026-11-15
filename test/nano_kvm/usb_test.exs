@@ -230,7 +230,8 @@ defmodule NanoKVM.USBTest do
              configure.({:speaker, channels: 8, rates: [384_000], sample_bits: 32})
 
     # 7.1 of 24 bits at 192 kHz: 25 frames of 24 bytes each 125 µs fit 682.
-    assert :ok = NanoKVM.USB.validate([{:speaker, channels: 8, rates: [192_000], sample_bits: 24}])
+    assert :ok =
+             NanoKVM.USB.validate([{:speaker, channels: 8, rates: [192_000], sample_bits: 24}])
 
     assert :ok = configure.({:speaker, channels: 2, rates: [384_000], sample_bits: 32})
 

@@ -5,8 +5,11 @@ defmodule NanoKVM.TouchTest do
 
   @moduletag :tmp_dir
 
-  defp event(type, code, value), do: <<0::64, type::little-16, code::little-16, value::little-signed-32>>
-  defp touch(x, y, down), do: event(3, 0, x) <> event(3, 1, y) <> event(1, 0x14A, down) <> event(0, 0, 0)
+  defp event(type, code, value),
+    do: <<0::64, type::little-16, code::little-16, value::little-signed-32>>
+
+  defp touch(x, y, down),
+    do: event(3, 0, x) <> event(3, 1, y) <> event(1, 0x14A, down) <> event(0, 0, 0)
 
   test "touches become down, move and up", %{tmp_dir: tmp_dir} do
     device = Path.join(tmp_dir, "event0")

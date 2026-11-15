@@ -21,6 +21,7 @@ defmodule NanoKVM.HID.ReportTest do
     assert Report.touch([]) == <<3>> <> <<0::480>> <> <<0>>
 
     report = Report.touch([{0, 10, 20}, {1, 30, 40}])
+
     assert <<3, 0b11, 0, 10::little-16, 20::little-16, 0b11, 1, 30::little-16, 40::little-16,
              _rest::binary-size(48), 2>> = report
   end

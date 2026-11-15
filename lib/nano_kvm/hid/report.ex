@@ -75,7 +75,9 @@ defmodule NanoKVM.HID.Report do
   """
   @spec touch([contact()]) :: <<_::496>>
   def touch(contacts) when length(contacts) <= @max_contacts do
-    touching = for {id, x, y} <- contacts, into: <<>>, do: <<0b11, id, x::little-16, y::little-16>>
+    touching =
+      for {id, x, y} <- contacts, into: <<>>, do: <<0b11, id, x::little-16, y::little-16>>
+
     rest = :binary.copy(<<0::48>>, @max_contacts - length(contacts))
     <<3>> <> touching <> rest <> <<length(contacts)>>
   end

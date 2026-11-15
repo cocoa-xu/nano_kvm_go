@@ -115,6 +115,7 @@ defmodule NanoKVM.AudioTest do
   test "decodes the packets of the port program" do
     assert Protocol.decode(<<0, "open">>) == {:log, "open"}
     assert Protocol.decode(<<1, 1, 0, 255, 255>>) == {:pcm, <<1, 0, 255, 255>>}
+
     assert Protocol.decode(<<2, "44100 2">>) ==
              {:format, %{rate: 44_100, channels: 2, sample_format: :s16_le}}
 

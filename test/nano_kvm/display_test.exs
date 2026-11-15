@@ -23,7 +23,9 @@ defmodule NanoKVM.DisplayTest do
 
   test "shows pictures and canvases", %{tmp_dir: tmp_dir} do
     {sysfs, dev, backlight} = fake(tmp_dir, 4, 2, 8)
-    display = start_supervised!({Display, framebuffer: sysfs, dev: dev, backlight: backlight, name: nil})
+
+    display =
+      start_supervised!({Display, framebuffer: sysfs, dev: dev, backlight: backlight, name: nil})
 
     assert Display.info(display) == {:ok, %{width: 4, height: 2, stride: 8}}
     assert :ok = Display.show(display, Canvas.new(4, 2, 0xABCD))
@@ -36,7 +38,9 @@ defmodule NanoKVM.DisplayTest do
 
   test "rows go to their place in a padded framebuffer", %{tmp_dir: tmp_dir} do
     {sysfs, dev, backlight} = fake(tmp_dir, 2, 2, 8)
-    display = start_supervised!({Display, framebuffer: sysfs, dev: dev, backlight: backlight, name: nil})
+
+    display =
+      start_supervised!({Display, framebuffer: sysfs, dev: dev, backlight: backlight, name: nil})
 
     assert :ok = Display.show(display, <<1::little-16, 2::little-16, 3::little-16, 4::little-16>>)
 

@@ -78,7 +78,12 @@ defmodule NanoKVM.MixProject do
         ],
         "Keyboard and mouse": [NanoKVM.HID, NanoKVM.HID.Keymap, NanoKVM.HID.Report],
         USB: [NanoKVM.USB, NanoKVM.Storage],
-        "LCD and touch panel": [NanoKVM.Display, NanoKVM.Display.Canvas, NanoKVM.Touch]
+        "LCD, touch panel, button": [
+          NanoKVM.Display,
+          NanoKVM.Display.Canvas,
+          NanoKVM.Touch,
+          NanoKVM.Button
+        ]
       ]
     ]
   end

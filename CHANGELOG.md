@@ -31,7 +31,8 @@
   language keys, the editing keys
 * Input wakes a target that sleeps
 * `NanoKVM.Display` and `NanoKVM.Display.Canvas`: pictures and text on the
-  LCD, its backlight; `NanoKVM.Touch`: its touch panel
+  LCD, its backlight; `NanoKVM.Touch`: its touch panel; `NanoKVM.Button`:
+  the BOOT button
 
 ## v0.1.0
 

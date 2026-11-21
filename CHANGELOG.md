@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 (2026-11-21)
 
 * Renamed from `nano_kvm` (`NanoKVM`) to `nano_kvm_go` (`NanoKVMGo`): the
   library is for the NanoKVM-Go boards. The port programs are

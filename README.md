@@ -34,7 +34,7 @@ libraries.
 ```elixir
 def deps do
   [
-    {:nano_kvm_go, "~> 0.1"}
+    {:nano_kvm_go, github: "cocoa-xu/nano_kvm_go", tag: "v0.1.0"}
   ]
 end
 ```

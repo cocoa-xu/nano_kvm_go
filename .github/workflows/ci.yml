@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  OTP_VERSION: "29.1.2"
+  ELIXIR_VERSION: "1.20.5-otp-29"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ALSA headers, for the audio programs
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+            ~/.mix/dialyxir_*
+          key: mix-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors --force
+      - run: mix test
+      - run: mix credo --strict
+      - run: mix dialyzer
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the version
+        run: grep -qF "@version \"${GITHUB_REF_NAME#v}\"" mix.exs
+      - name: Release notes from the CHANGELOG
+        run: |
+          awk -v h="## $GITHUB_REF_NAME" 'index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") {f = 1; next} /^## /{f = 0} f' CHANGELOG.md > notes.md
+          # GitHub keeps the line breaks of a release's notes: join wrapped lines
+          python3 - notes.md <<'EOF'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          out = []
+          for line in p.read_text().splitlines():
+              if line.strip() and out and out[-1].strip() and not line.startswith("* "):
+                  out[-1] = out[-1].rstrip() + " " + line.strip()
+              else:
+                  out.append(line)
+          p.write_text("\n".join(out).strip("\n") + "\n")
+          EOF
+          grep -q . notes.md
+          cat notes.md
+      - name: Release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME is already released"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          fi

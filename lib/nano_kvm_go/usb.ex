@@ -135,15 +135,13 @@ defmodule NanoKVMGo.USB do
   # The serial number the NanoKVM-Go system makes the default addresses
   # from, as its shell takes it: without the newlines at the end.
   defp serial_number do
-    with {id, 0} <- System.cmd("boardid", []),
+    with boardid when is_binary(boardid) <- System.find_executable("boardid"),
+         {id, 0} <- System.cmd(boardid, []),
          id when id != "" <- String.trim_trailing(id, "\n") do
       id
     else
       _ -> nil
     end
-  rescue
-    # No boardid: not a Nerves device.
-    ErlangError -> nil
   end
 
   defp valid?(:serial_number, serial_number),

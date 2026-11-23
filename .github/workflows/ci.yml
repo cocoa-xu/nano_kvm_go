@@ -25,8 +25,8 @@ jobs:
       MIX_ENV: test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ALSA headers, for the audio programs
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: ALSA headers, for the audio programs, and libmnl's, for nerves_uevent
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libmnl-dev
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}

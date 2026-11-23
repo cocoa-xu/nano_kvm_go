@@ -157,12 +157,18 @@ defmodule NanoKVMGo.Video do
           csi_recoveries: non_neg_integer() | nil
         }
   def capture_stats do
-    dir = with device when is_binary(device) <- Devices.capture(), do: Devices.sysfs_dir(device)
+    case Devices.capture() do
+      nil ->
+        %{mid_frame_stops: nil, csi_recoveries: nil}
 
-    %{
-      mid_frame_stops: read_counter(dir, "mid_frame_stops"),
-      csi_recoveries: read_counter(dir, "csi_recoveries")
-    }
+      device ->
+        dir = Devices.sysfs_dir(device)
+
+        %{
+          mid_frame_stops: read_counter(dir, "mid_frame_stops"),
+          csi_recoveries: read_counter(dir, "csi_recoveries")
+        }
+    end
   end
 
   @doc """
@@ -257,10 +263,7 @@ defmodule NanoKVMGo.Video do
   def handle_call(:input, _from, state), do: {:reply, state.input, state}
 
   @impl GenServer
-  def handle_cast(:keyframe, state) do
-    command(state, :keyframe)
-    {:noreply, %{state | key_requested?: true}}
-  end
+  def handle_cast(:keyframe, state), do: {:noreply, ask_keyframe(state)}
 
   @impl GenServer
   def handle_info({port, {:data, packet}}, %{port: port} = state) do
@@ -307,15 +310,13 @@ defmodule NanoKVMGo.Video do
       end)
 
     waiting? = Enum.any?(subscribers, fn {_pid, subscriber} -> not subscriber.synced? end)
+    state = %{state | subscribers: subscribers}
 
-    key_requested? =
-      cond do
-        kind == :key -> waiting?
-        waiting? and not state.key_requested? -> command(state, :keyframe) == :ok
-        true -> state.key_requested?
-      end
-
-    %{state | subscribers: subscribers, key_requested?: key_requested?}
+    cond do
+      kind == :key -> %{state | key_requested?: waiting?}
+      waiting? and not state.key_requested? -> ask_keyframe(state)
+      true -> state
+    end
   end
 
   defp handle_packet(:unknown, state), do: state
@@ -347,6 +348,11 @@ defmodule NanoKVMGo.Video do
   end
 
   defp backlog(_pid), do: 0
+
+  defp ask_keyframe(state) do
+    :ok = command(state, :keyframe)
+    %{state | key_requested?: true}
+  end
 
   defp notify(state, event) do
     Enum.each(state.subscribers, fn {pid, _subscriber} -> send(pid, {__MODULE__, event}) end)
@@ -435,7 +441,7 @@ defmodule NanoKVMGo.Video do
 
   defp devices(%{devices: devices}), do: {:ok, Map.put_new(devices, :h264, nil)}
 
-  defp read_counter(dir, file) when is_binary(dir) do
+  defp read_counter(dir, file) do
     with {:ok, text} <- File.read(Path.join(dir, file)),
          {count, _rest} <- Integer.parse(text) do
       count
@@ -443,8 +449,6 @@ defmodule NanoKVMGo.Video do
       _ -> nil
     end
   end
-
-  defp read_counter(_dir, _file), do: nil
 
   defp edid_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_edid")
 

@@ -225,9 +225,12 @@ defmodule NanoKVMGo.Microphone do
     max(until - System.monotonic_time(:millisecond), 0)
   end
 
+  defp restart_idle_timer(%{idle: nil} = state),
+    do: %{state | idle: Process.send_after(self(), :idle, state.config.idle_ms)}
+
   defp restart_idle_timer(state) do
-    _remaining = state.idle && Process.cancel_timer(state.idle)
-    %{state | idle: Process.send_after(self(), :idle, state.config.idle_ms)}
+    _remaining = Process.cancel_timer(state.idle)
+    restart_idle_timer(%{state | idle: nil})
   end
 
   defp stop(%{port: nil} = state), do: cancel_restart(state)

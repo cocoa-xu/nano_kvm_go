@@ -207,6 +207,10 @@ defmodule NanoKVMGo.ExpansionTest do
     assert {:ok, _info} = Expansion.info(pid)
   end
 
+  test "refuses to start without its U-Boot environment" do
+    assert_raise ArgumentError, fn -> Expansion.start_link(name: nil, kv: NoSuchKV) end
+  end
+
   test "tells what the kernel does not have", %{opts: opts, tmp_dir: tmp_dir} do
     pid = start(Keyword.put(opts, :device, Path.join(tmp_dir, "none")))
     assert Expansion.info(pid) == {:error, :enoent}

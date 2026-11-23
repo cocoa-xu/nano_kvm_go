@@ -63,7 +63,7 @@
   {:invalid_size, pool, size}}`
 * `nerves_runtime` is an optional dependency, and `Nerves.Runtime.KV` is
   called as it is: without it, `{:error, {:undefined, kv}}` and the
-  fallbacks are gone
+  fallbacks are gone, and `NanoKVMGo.Expansion` does not start
 * `NanoKVMGo.Display.Canvas.text/6` and `NanoKVMGo.Display.Canvas.render/2`
   check their options: a `:scale` that is not a positive integer, a
   `:rotate` other than 0 and 180, or an unknown option raise

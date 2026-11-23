@@ -47,7 +47,7 @@ defmodule NanoKVMGo.Expansion do
     * `:pwm_chip` - the PWM chip's sysfs directory, by default the one of
       the SoC's PWM1 (`6061000.pwm`)
     * `:kv` - the U-Boot environment, where the mode persists,
-      `Nerves.Runtime.KV` by default
+      `Nerves.Runtime.KV` (of `nerves_runtime`) by default
     * `:gpio` - the GPIO library, `Circuits.GPIO` by default
   """
   use GenServer
@@ -306,6 +306,8 @@ defmodule NanoKVMGo.Expansion do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
   end
 
+  def handle_info(_message, state), do: {:noreply, state}
+
   @impl GenServer
   def terminate(_reason, state), do: release(state)
 
@@ -538,7 +540,7 @@ defmodule NanoKVMGo.Expansion do
   defp valid?(:name, _name), do: true
   defp valid?(:device, device), do: is_binary(device)
   defp valid?(:pwm_chip, pwm_chip), do: is_binary(pwm_chip)
-  defp valid?(:kv, kv), do: is_atom(kv)
-  defp valid?(:gpio, gpio), do: is_atom(gpio)
+  defp valid?(:kv, kv), do: is_atom(kv) and Code.ensure_loaded?(kv)
+  defp valid?(:gpio, gpio), do: is_atom(gpio) and Code.ensure_loaded?(gpio)
   defp valid?(:persist, persist), do: is_boolean(persist)
 end

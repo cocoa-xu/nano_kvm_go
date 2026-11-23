@@ -93,6 +93,18 @@ defmodule NanoKVMGo.ExpansionTest do
     assert mode(device) == "uart"
   end
 
+  test "leaves a kept mode the kernel does not offer", %{opts: opts, device: device} do
+    File.write!(Path.join(device, "modes"), "off uart\n")
+
+    for kept <- ["i2c", "sideways"] do
+      Application.put_env(:nano_kvm_go, FakeKV, %{"nanokvm_expansion" => kept})
+      pid = start(opts)
+      assert {:ok, %{mode: :off}} = Expansion.info(pid)
+      assert mode(device) == "off\n"
+      :ok = stop_supervised(Expansion)
+    end
+  end
+
   test "runs PWM lines and gives them back", %{opts: opts, chip: chip} do
     pid = start(opts)
     pwm0 = Path.join(chip, "pwm0")

@@ -330,8 +330,9 @@ defmodule NanoKVMGo.Expansion do
   defp kept_mode(state) do
     with true <- Code.ensure_loaded?(state.kv),
          name when is_binary(name) and name != "" <- state.kv.get(@variable),
+         {:ok, mode} <- Map.fetch(@modes, name),
          {:ok, modes} <- read_modes(state),
-         mode when is_atom(mode) <- Enum.find(modes, &(from_mode(&1) == name)) do
+         true <- mode in modes do
       {:ok, mode}
     else
       _ -> :none

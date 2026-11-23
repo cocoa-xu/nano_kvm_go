@@ -8,6 +8,8 @@
   the wrong size, instead of opening it again for each
 * `NanoKVMGo.Video` and `NanoKVMGo.Audio` send to subscribers on other
   nodes, instead of crashing on their first message
+* `NanoKVMGo.Expansion` leaves a kept mode the kernel does not offer,
+  instead of writing the mode `nil`
 
 ## v0.2.1 (2026-11-23)
 

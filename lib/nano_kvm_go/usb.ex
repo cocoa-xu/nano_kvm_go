@@ -20,8 +20,9 @@ defmodule NanoKVMGo.USB do
   computer keeps one network interface for the NanoKVM: the system gives it
   those in the U-Boot environment's `usbnet_devaddr` and `usbnet_hostaddr`,
   else addresses made from the serial number
-  (`default_network_addresses/1`). `keep_network_addresses/2` puts new ones
-  there.
+  (`default_network_addresses/1`). `persist_network_addresses/2` puts new
+  ones there, through `Nerves.Runtime.KV` or another module with its
+  `put/1` (the `:kv` option).
 
       children = [
         {Kuroneko.Gadget, NanoKVMGo.USB.gadget_options() ++ [functions: [:keyboard, :mouse]]}
@@ -58,8 +59,8 @@ defmodule NanoKVMGo.USB do
 
     * `:serial_number` - what the default network addresses are made from,
       by default the board's (`boardid`'s)
-    * `:kv` - where to keep the network addresses, `Nerves.Runtime.KV` by
-      default
+    * `:kv` - the U-Boot environment, where the network addresses persist,
+      `Nerves.Runtime.KV` by default
   """
   @spec gadget_options(keyword()) :: keyword()
   def gadget_options(opts \\ []) do
@@ -80,7 +81,7 @@ defmodule NanoKVMGo.USB do
       network: [
         function: "ncm.usb0",
         default_addresses: serial_number && default_network_addresses(serial_number),
-        persist: &keep_network_addresses(&1, kv)
+        persist: &persist_network_addresses(&1, kv: kv)
       ]
     ]
   end
@@ -101,22 +102,28 @@ defmodule NanoKVMGo.USB do
   end
 
   @doc """
-  Keeps USB network addresses in the U-Boot environment, where the
+  Persists USB network addresses in the U-Boot environment, where the
   NanoKVM-Go system reads them at the next boots: `:device_address` (the
   NanoKVM's end), `:host_address` (the computer's), each an address or
   `:default` for the one made from the serial number.
+
+  ## Options
+
+    * `:kv` - the U-Boot environment, `Nerves.Runtime.KV` by default
   """
-  @spec keep_network_addresses(
+  @spec persist_network_addresses(
           %{optional(:device_address | :host_address) => mac_address() | :default},
-          module()
+          [{:kv, module()}]
         ) :: :ok | {:error, term()}
-  def keep_network_addresses(addresses, kv \\ Nerves.Runtime.KV) do
+  def persist_network_addresses(addresses, opts \\ []) when is_map(addresses) do
+    opts = Options.validate!(opts, [kv: Nerves.Runtime.KV], &valid?/2)
+
     variables =
       for {key, address} <- addresses, into: %{} do
         {Map.fetch!(@address_variables, key), if(address == :default, do: "", else: address)}
       end
 
-    if Code.ensure_loaded?(kv), do: kv.put(variables), else: {:error, {:undefined, kv}}
+    opts[:kv].put(variables)
   end
 
   defp local_address(<<first, rest::binary-5>>) do

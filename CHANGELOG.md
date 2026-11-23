@@ -51,6 +51,19 @@
   event}`; each process that sends messages has their type, `message()`
 * `NanoKVMGo.Video` tells a subscriber the input once it knows it, instead
   of `{NanoKVMGo.Video, {:input, nil}}`
+* One verb for the U-Boot environment, as in `persist: false`:
+  `NanoKVMGo.CMA.persist_sizes/2` and `NanoKVMGo.CMA.persisted_sizes/1`
+  instead of `put_sizes/2` and `saved_sizes/1`, and
+  `NanoKVMGo.USB.persist_network_addresses/2`, with the `:kv` option,
+  instead of `keep_network_addresses/2` with the module as its second
+  argument
+* `NanoKVMGo.CMA.persist_sizes/2` takes a map, and raises `ArgumentError`
+  for a pool other than `:video` and `:npu` or a size of another kind,
+  instead of returning `{:error, {:unknown_pool, pool}}` or `{:error,
+  {:invalid_size, pool, size}}`
+* `nerves_runtime` is an optional dependency, and `Nerves.Runtime.KV` is
+  called as it is: without it, `{:error, {:undefined, kv}}` and the
+  fallbacks are gone
 
 ## v0.2.1 (2026-11-23)
 

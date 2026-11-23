@@ -74,42 +74,50 @@ defmodule NanoKVMGo.CMATest do
   test "keeps sizes for the next boots", %{tmp_dir: tmp_dir} do
     opts = [kv: KV, root: device_tree(tmp_dir)]
 
-    assert CMA.saved_sizes(kv: KV) == %{video: :default, npu: :default}
-    assert :ok = CMA.put_sizes(%{video: 160, npu: 96}, opts)
+    assert CMA.persisted_sizes(kv: KV) == %{video: :default, npu: :default}
+    assert :ok = CMA.persist_sizes(%{video: 160, npu: 96}, opts)
     assert %{"cma_video" => "160", "cma_npu" => "96", "cma_try" => ""} = KV.env()
-    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: 96}
+    assert CMA.persisted_sizes(kv: KV) == %{video: 160, npu: 96}
 
-    assert :ok = CMA.put_sizes([npu: 0], opts)
-    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: 0}
+    assert :ok = CMA.persist_sizes(%{npu: 0}, opts)
+    assert CMA.persisted_sizes(kv: KV) == %{video: 160, npu: 0}
 
-    assert :ok = CMA.put_sizes(%{video: :default}, opts)
+    assert :ok = CMA.persist_sizes(%{video: :default}, opts)
     assert %{"cma_video" => "", "cma_npu" => "0"} = KV.env()
-    assert CMA.saved_sizes(kv: KV) == %{video: :default, npu: 0}
+    assert CMA.persisted_sizes(kv: KV) == %{video: :default, npu: 0}
     assert CMA.trial(kv: KV) == nil
   end
 
   test "refuses sizes U-Boot would not take", %{tmp_dir: tmp_dir} do
     opts = [kv: KV, root: device_tree(tmp_dir)]
 
-    assert CMA.put_sizes(%{video: 100}, opts) == {:error, {:invalid_size, :video, 100}}
-    assert CMA.put_sizes(%{video: 0}, opts) == {:error, {:invalid_size, :video, 0}}
-    assert CMA.put_sizes(%{npu: -8}, opts) == {:error, {:invalid_size, :npu, -8}}
-    assert CMA.put_sizes(%{npu: "64"}, opts) == {:error, {:invalid_size, :npu, "64"}}
-    assert CMA.put_sizes(%{video: 264}, opts) == {:error, {:invalid_size, :video, 264}}
-    assert CMA.put_sizes(%{video: 200, npu: 64}, opts) == {:error, {:too_large, 264, 256}}
-    assert CMA.put_sizes(%{gpu: 8}, opts) == {:error, {:unknown_pool, :gpu}}
+    assert CMA.persist_sizes(%{video: 100}, opts) == {:error, {:invalid_size, :video, 100}}
+    assert CMA.persist_sizes(%{video: 0}, opts) == {:error, {:invalid_size, :video, 0}}
+    assert CMA.persist_sizes(%{video: 264}, opts) == {:error, {:invalid_size, :video, 264}}
+    assert CMA.persist_sizes(%{video: 200, npu: 64}, opts) == {:error, {:too_large, 264, 256}}
+    assert KV.env() == %{}
+  end
+
+  test "raises for what is no pool size", %{tmp_dir: tmp_dir} do
+    opts = [kv: KV, root: device_tree(tmp_dir)]
+
+    for sizes <- [%{npu: -8}, %{npu: "64"}, %{gpu: 8}] do
+      assert_raise ArgumentError, fn -> CMA.persist_sizes(sizes, opts) end
+    end
+
+    assert_raise FunctionClauseError, fn -> CMA.persist_sizes([npu: 0], opts) end
     assert KV.env() == %{}
   end
 
   test "leaves the total to U-Boot without the DRAM's size", %{tmp_dir: tmp_dir} do
-    assert :ok = CMA.put_sizes(%{video: 1024, npu: 64}, kv: KV, root: tmp_dir)
+    assert :ok = CMA.persist_sizes(%{video: 1024, npu: 64}, kv: KV, root: tmp_dir)
   end
 
   test "tries sizes and goes back to the ones before", %{tmp_dir: tmp_dir} do
     opts = [kv: KV, root: device_tree(tmp_dir)]
     put_env(%{"cma_video" => "160"})
 
-    assert :ok = CMA.put_sizes(%{npu: 96}, [trial: true] ++ opts)
+    assert :ok = CMA.persist_sizes(%{npu: 96}, [trial: true] ++ opts)
 
     assert %{
              "cma_video" => "160",
@@ -120,12 +128,12 @@ defmodule NanoKVMGo.CMATest do
            } = KV.env()
 
     assert CMA.trial(kv: KV) == %{state: :pending, sizes: %{video: 160, npu: 96}}
-    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: :default}
+    assert CMA.persisted_sizes(kv: KV) == %{video: 160, npu: :default}
 
     # The boot that runs them; another trial still goes back to the same.
     put_env(%{KV.env() | "cma_try" => "2"})
     assert CMA.trial(kv: KV) == %{state: :running, sizes: %{video: 160, npu: 96}}
-    assert :ok = CMA.put_sizes(%{video: 200, npu: 56}, [trial: true] ++ opts)
+    assert :ok = CMA.persist_sizes(%{video: 200, npu: 56}, [trial: true] ++ opts)
     assert %{"cma_video_was" => "160", "cma_npu_was" => "", "cma_try" => "1"} = KV.env()
 
     assert :ok = CMA.cancel_trial(kv: KV)
@@ -141,15 +149,9 @@ defmodule NanoKVMGo.CMATest do
     opts = [kv: KV, root: device_tree(tmp_dir)]
     put_env(%{"cma_video" => "200", "cma_video_was" => "160", "cma_try" => "2"})
 
-    assert :ok = CMA.put_sizes(%{npu: 32}, opts)
+    assert :ok = CMA.persist_sizes(%{npu: 32}, opts)
 
     assert %{"cma_video" => "160", "cma_npu" => "32", "cma_try" => "", "cma_video_was" => ""} =
              KV.env()
-  end
-
-  test "without the U-Boot environment" do
-    assert CMA.saved_sizes(kv: NoSuchKV) == %{video: :default, npu: :default}
-    assert CMA.trial(kv: NoSuchKV) == nil
-    assert CMA.put_sizes(%{npu: 0}, kv: NoSuchKV) == {:error, {:undefined, NoSuchKV}}
   end
 end

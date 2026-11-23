@@ -42,8 +42,13 @@ end
 The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`,
 `nano_kvm_go_playback`, `nano_kvm_go_edid` and `nano_kvm_go_input`, C) are
 built for the target by the Nerves toolchain; the audio ones link alsa-lib,
-which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the rest of the
-library still compiles and its tests run.
+which the NanoKVM-Go system has. On hosts other than Linux they are not
+built, so the rest of the library still compiles and its tests run.
+
+What persists in the U-Boot environment, the CMA sizes, the expansion mode
+and the USB network's addresses, goes through `Nerves.Runtime.KV` of
+`nerves_runtime`, which Nerves applications have, or another module given as
+the `:kv` option.
 
 ## Usage
 
@@ -225,13 +230,13 @@ NanoKVMGo.CMA.sizes()
 #=> %{video: 192, npu: 64}
 
 # At the next boots; multiples of 8 MiB, together at most half of the DRAM.
-:ok = NanoKVMGo.CMA.put_sizes(%{video: 160, npu: 96})
+:ok = NanoKVMGo.CMA.persist_sizes(%{video: 160, npu: 96})
 
 # The NPU off, its memory back to Linux; :default for the device tree's size.
-:ok = NanoKVMGo.CMA.put_sizes(%{video: :default, npu: 0})
+:ok = NanoKVMGo.CMA.persist_sizes(%{video: :default, npu: 0})
 
 # Only the next boot, unless the firmware is validated in it.
-:ok = NanoKVMGo.CMA.put_sizes(%{video: 128, npu: 128}, trial: true)
+:ok = NanoKVMGo.CMA.persist_sizes(%{video: 128, npu: 128}, trial: true)
 NanoKVMGo.CMA.trial()
 #=> %{state: :pending, sizes: %{video: 128, npu: 128}}
 ```

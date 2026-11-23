@@ -21,7 +21,7 @@ defmodule NanoKVMGo.USBTest do
     assert USB.gadget_options(serial_number: nil)[:network][:default_addresses] == nil
   end
 
-  test "keeps the network addresses in the U-Boot environment" do
+  test "persists the network addresses in the U-Boot environment" do
     Process.register(self(), FakeKV)
     persist = USB.gadget_options(serial_number: nil, kv: FakeKV)[:network][:persist]
 
@@ -29,10 +29,7 @@ defmodule NanoKVMGo.USBTest do
     assert_received {FakeKV, %{"usbnet_hostaddr" => "02:12:34:56:78:9a"} = put}
     refute Map.has_key?(put, "usbnet_devaddr")
 
-    assert :ok = USB.keep_network_addresses(%{device_address: :default}, FakeKV)
+    assert :ok = USB.persist_network_addresses(%{device_address: :default}, kv: FakeKV)
     assert_received {FakeKV, %{"usbnet_devaddr" => ""}}
-
-    assert USB.keep_network_addresses(%{host_address: :default}, NoSuchKV) ==
-             {:error, {:undefined, NoSuchKV}}
   end
 end

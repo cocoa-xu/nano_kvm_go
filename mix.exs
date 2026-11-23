@@ -74,6 +74,7 @@ defmodule NanoKVMGo.MixProject do
     [
       {:elixir_make, "~> 0.9", runtime: false},
       {:circuits_gpio, "~> 2.3"},
+      {:nerves_runtime, "~> 0.13", optional: true},
       {:ex_doc, "~> 0.34", only: :docs, runtime: false},
       {:dialyxir, "~> 1.4", only: :test, runtime: false},
       {:credo, "~> 1.7", only: :test, runtime: false}

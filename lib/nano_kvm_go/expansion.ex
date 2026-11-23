@@ -26,9 +26,9 @@ defmodule NanoKVMGo.Expansion do
   monotonic clock. A line becomes an output with `write/3` and an input
   again with `read/2` or `subscribe/1`.
 
-  The mode is kept in the U-Boot environment, `nanokvm_expansion`, and set
-  again when this process starts; `persist: false` keeps it until the next
-  boot only. The GPIOs and PWM channels this process opened are given back
+  The mode persists in the U-Boot environment, `nanokvm_expansion`, and is
+  set again when this process starts; with `persist: false` it lasts until
+  the next boot only. The GPIOs and PWM channels this process opened are given back
   before the mode changes, and the kernel refuses a mode change with
   `{:error, :busy}` while other code holds them. Use `Circuits.UART` on
   `"ttyS3"` in the `:uart` mode and `Circuits.I2C` on `"i2c-2"` in the
@@ -46,7 +46,8 @@ defmodule NanoKVMGo.Expansion do
       `/sys/devices/platform/expansion` by default
     * `:pwm_chip` - the PWM chip's sysfs directory, by default the one of
       the SoC's PWM1 (`6061000.pwm`)
-    * `:kv` - where the mode is kept, `Nerves.Runtime.KV` by default
+    * `:kv` - the U-Boot environment, where the mode persists,
+      `Nerves.Runtime.KV` by default
     * `:gpio` - the GPIO library, `Circuits.GPIO` by default
   """
   use GenServer
@@ -102,7 +103,7 @@ defmodule NanoKVMGo.Expansion do
   @pwm_device "6061000.pwm"
 
   @doc """
-  Starts the process and sets the kept mode. See the module documentation
+  Starts the process and sets the persisted mode. See the module documentation
   for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()
@@ -133,10 +134,11 @@ defmodule NanoKVMGo.Expansion do
   def info(server \\ __MODULE__), do: GenServer.call(server, :info)
 
   @doc """
-  Sets the mode, kept for the next boots unless `persist: false`:
+  Sets the mode, persisted for the next boots unless `persist: false`:
   `set_mode(:uart)`, `set_mode(server, :uart)` or
   `set_mode(server, :uart, persist: false)`. A mode the kernel does not
-  offer gives `{:error, {:unknown_mode, mode}}`.
+  offer gives `{:error, {:unknown_mode, mode}}`, and one set but not
+  persisted `{:error, {:not_kept, reason}}`.
   """
   @spec set_mode(GenServer.server(), mode(), [{:persist, boolean()}]) :: :ok | {:error, term()}
   def set_mode(server \\ __MODULE__, mode, opts \\ []) when mode in @known_modes do
@@ -329,7 +331,7 @@ defmodule NanoKVMGo.Expansion do
   # After release/1: the subscribers watch the mode there is afterwards.
   defp change_mode(state, mode, persist) do
     with :ok <- write_mode(state, mode),
-         :ok <- if(persist, do: keep_mode(state, mode), else: :ok) do
+         :ok <- if(persist, do: persist_mode(state, mode), else: :ok) do
       {:reply, :ok, watch(state, mode)}
     else
       error -> {:reply, error, watch(state, current_mode(state))}
@@ -346,11 +348,10 @@ defmodule NanoKVMGo.Expansion do
   defp to_mode(name), do: Map.get(@modes, name, :off)
   defp from_mode(mode), do: mode |> Atom.to_string() |> String.replace("_", "-")
 
-  # The mode kept in the U-Boot environment; "" is the mode at boot.
+  # The mode persisted in the U-Boot environment; "" is the mode at boot.
 
-  defp kept_mode(state) do
-    with true <- Code.ensure_loaded?(state.kv),
-         name when is_binary(name) and name != "" <- state.kv.get(@variable),
+  defp persisted_mode(state) do
+    with name when is_binary(name) and name != "" <- state.kv.get(@variable),
          {:ok, mode} <- Map.fetch(@modes, name),
          {:ok, modes} <- read_modes(state),
          true <- mode in modes do
@@ -361,7 +362,7 @@ defmodule NanoKVMGo.Expansion do
   end
 
   defp restore_mode(state) do
-    with {:ok, kept} <- kept_mode(state),
+    with {:ok, kept} <- persisted_mode(state),
          {:ok, mode} when mode != kept <- read_mode(state),
          {:error, reason} <- write_mode(state, kept) do
       Logger.warning("Expansion lines not set to #{inspect(kept)}: #{inspect(reason)}")
@@ -370,14 +371,10 @@ defmodule NanoKVMGo.Expansion do
     end
   end
 
-  defp keep_mode(state, mode) do
-    value = if mode == :off, do: "", else: from_mode(mode)
-
-    if Code.ensure_loaded?(state.kv) do
-      with {:error, reason} <- state.kv.put(%{@variable => value}),
-           do: {:error, {:not_kept, reason}}
-    else
-      {:error, {:not_kept, {:undefined, state.kv}}}
+  defp persist_mode(state, mode) do
+    case state.kv.put(%{@variable => if(mode == :off, do: "", else: from_mode(mode))}) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:not_kept, reason}}
     end
   end
 

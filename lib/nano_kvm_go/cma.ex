@@ -11,13 +11,17 @@ defmodule NanoKVMGo.CMA do
       NanoKVMGo.CMA.sizes()
       #=> %{video: 192, npu: 64}
 
-      NanoKVMGo.CMA.put_sizes(%{video: 160, npu: 96})
+      NanoKVMGo.CMA.persist_sizes(%{video: 160, npu: 96})
       #=> :ok
 
   Sizes are in MiB: multiples of 8, video's at least 8, the NPU's 0 to turn
   the NPU off, together at most half of the DRAM. `:default` stands for the
   device tree's size, 192 and 64 on the Go+. 4K capture with JPEG and H.264
   needs about 192 MiB.
+
+  The sizes for the next boots are in the U-Boot environment, through
+  `Nerves.Runtime.KV` or another module with its `get/1` and `put/1` (the
+  `:kv` option).
 
   ## Trying sizes first
 
@@ -44,6 +48,8 @@ defmodule NanoKVMGo.CMA do
   """
   @type trial() :: %{state: :pending | :running, sizes: %{video: size(), npu: size()}}
 
+  @type persist_option() :: {:kv, module()} | {:root, Path.t()} | {:trial, boolean()}
+
   @doc """
   The sizes of the pools in this boot, in MiB. The NPU's is 0 when the NPU
   is off.
@@ -52,7 +58,7 @@ defmodule NanoKVMGo.CMA do
 
     * `:root` - the root of the file system to read, `"/"` by default
   """
-  @spec sizes(keyword()) :: sizes()
+  @spec sizes([{:root, Path.t()}]) :: sizes()
   def sizes(opts \\ []) do
     opts = Options.validate!(opts, [root: "/"], &valid?/2)
     dt = device_tree(opts[:root])
@@ -63,7 +69,7 @@ defmodule NanoKVMGo.CMA do
   end
 
   @doc """
-  The sizes kept for the next boots, `:default` for the device tree's.
+  The sizes persisted for the next boots, `:default` for the device tree's.
   During a trial, the sizes from before it: those the boots go back to unless
   the firmware is validated.
 
@@ -71,28 +77,37 @@ defmodule NanoKVMGo.CMA do
 
     * `:kv` - the U-Boot environment, `Nerves.Runtime.KV` by default
   """
-  @spec saved_sizes(keyword()) :: %{video: size(), npu: size()}
-  def saved_sizes(opts \\ []) do
-    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
-    saved(kv, if(trial_state(kv), do: "_was", else: ""))
+  @spec persisted_sizes([{:kv, module()}]) :: %{video: size(), npu: size()}
+  def persisted_sizes(opts \\ []) do
+    kv = kv(opts)
+    read_sizes(kv, if(trial_state(kv), do: "_was", else: ""))
   end
 
   @doc """
   The trial of sizes, `nil` without one.
+
+  ## Options
+
+    * `:kv` - the U-Boot environment, `Nerves.Runtime.KV` by default
   """
-  @spec trial(keyword()) :: trial() | nil
+  @spec trial([{:kv, module()}]) :: trial() | nil
   def trial(opts \\ []) do
-    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
+    kv = kv(opts)
 
     case trial_state(kv) do
       nil -> nil
-      state -> %{state: state, sizes: saved(kv, "")}
+      state -> %{state: state, sizes: read_sizes(kv, "")}
     end
   end
 
   @doc """
-  Keeps pool sizes for the next boots: `:video` and `:npu` in MiB, or
+  Persists pool sizes for the next boots: `:video` and `:npu` in MiB, or
   `:default`. A size left out stays as it is, and a trial under way ends.
+
+  A size U-Boot would not take gives `{:error, {:invalid_size, pool,
+  size}}`, and sizes together over half the DRAM `{:error, {:too_large,
+  total, half}}`. A pool other than `:video` and `:npu`, or a size that is
+  neither a non-negative integer nor `:default`, raises `ArgumentError`.
 
   ## Options
 
@@ -102,21 +117,20 @@ defmodule NanoKVMGo.CMA do
     * `:root` - the root of the file system, `"/"` by default, where the
       DRAM's size comes from
   """
-  @spec put_sizes(%{optional(:video | :npu) => size()} | keyword(), keyword()) ::
+  @spec persist_sizes(%{optional(:video | :npu) => size()}, [persist_option()]) ::
           :ok | {:error, term()}
-  def put_sizes(sizes, opts \\ []) do
+  def persist_sizes(sizes, opts \\ []) when is_map(sizes) do
     opts = Options.validate!(opts, [kv: Nerves.Runtime.KV, root: "/", trial: false], &valid?/2)
+    Enum.each(sizes, &check_pool!/1)
     kv = opts[:kv]
-    sizes = Map.new(sizes)
-    saved = saved_sizes(kv: kv)
-    new = Map.merge(saved, sizes)
-    half = with dram when is_integer(dram) <- dram_mb(device_tree(opts[:root])), do: div(dram, 2)
+    persisted = persisted_sizes(kv: kv)
+    new = Map.merge(persisted, sizes)
+    half = half_dram_mb(opts[:root])
 
-    with :ok <- check_pools(sizes),
-         :ok <- check_size(:video, new.video, @align, half),
+    with :ok <- check_size(:video, new.video, @align, half),
          :ok <- check_size(:npu, new.npu, 0, half),
          :ok <- check_total(new, half) do
-      put(kv, variables(new, saved, opts[:trial]))
+      kv.put(variables(new, persisted, opts[:trial]))
     end
   end
 
@@ -127,15 +141,19 @@ defmodule NanoKVMGo.CMA do
 
     * `:kv` - the U-Boot environment, `Nerves.Runtime.KV` by default
   """
-  @spec cancel_trial(keyword()) :: :ok | {:error, term()}
+  @spec cancel_trial([{:kv, module()}]) :: :ok | {:error, term()}
   def cancel_trial(opts \\ []) do
-    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
+    kv = kv(opts)
 
     if trial_state(kv) do
-      put(kv, variables(saved(kv, "_was"), nil, false))
+      kv.put(variables(read_sizes(kv, "_was"), nil, false))
     else
       :ok
     end
+  end
+
+  defp kv(opts) do
+    opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
   end
 
   # U-Boot's variables (uboot/uboot.env of nerves_system_nano_kvm_go):
@@ -158,23 +176,15 @@ defmodule NanoKVMGo.CMA do
   end
 
   defp trial_state(kv) do
-    case get(kv, "cma_try") do
+    case kv.get("cma_try") do
       "1" -> :pending
       "2" -> :running
       _ -> nil
     end
   end
 
-  defp saved(kv, suffix) do
-    %{video: parse(get(kv, "cma_video" <> suffix)), npu: parse(get(kv, "cma_npu" <> suffix))}
-  end
-
-  defp get(kv, variable) do
-    if Code.ensure_loaded?(kv), do: kv.get(variable)
-  end
-
-  defp put(kv, variables) do
-    if Code.ensure_loaded?(kv), do: kv.put(variables), else: {:error, {:undefined, kv}}
+  defp read_sizes(kv, suffix) do
+    %{video: parse(kv.get("cma_video" <> suffix)), npu: parse(kv.get("cma_npu" <> suffix))}
   end
 
   defp parse(value) do
@@ -187,11 +197,12 @@ defmodule NanoKVMGo.CMA do
   defp format(:default), do: ""
   defp format(mb), do: Integer.to_string(mb)
 
-  defp check_pools(sizes) do
-    case Map.keys(sizes) -- [:video, :npu] do
-      [] -> :ok
-      [pool | _] -> {:error, {:unknown_pool, pool}}
-    end
+  defp check_pool!({pool, size})
+       when pool in [:video, :npu] and (size == :default or (is_integer(size) and size >= 0)),
+       do: :ok
+
+  defp check_pool!(pool_size) do
+    raise ArgumentError, "invalid pool size: #{inspect(pool_size)}"
   end
 
   # As U-Boot checks them; without the DRAM's size (half: nil) it alone
@@ -213,6 +224,13 @@ defmodule NanoKVMGo.CMA do
   defp check_total(_sizes, _half), do: :ok
 
   defp device_tree(root), do: Path.join(root, "proc/device-tree")
+
+  defp half_dram_mb(root) do
+    case dram_mb(device_tree(root)) do
+      nil -> nil
+      dram -> div(dram, 2)
+    end
+  end
 
   defp reserved_memory(dt) do
     dt

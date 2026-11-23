@@ -151,12 +151,11 @@ defmodule NanoKVMGo.Backlight do
   defp write(dir, name, value), do: File.write(Path.join(dir, name), to_string(value))
 
   defp read_integer(dir, name) do
-    with {:ok, text} <- File.read(Path.join(dir, name)),
-         {value, _rest} <- Integer.parse(String.trim(text)) do
-      {:ok, value}
-    else
-      {:error, reason} -> {:error, reason}
-      :error -> {:error, {:not_a_number, name}}
+    with {:ok, text} <- File.read(Path.join(dir, name)) do
+      case Integer.parse(String.trim(text)) do
+        {value, _rest} -> {:ok, value}
+        :error -> {:error, {:not_a_number, name}}
+      end
     end
   end
 

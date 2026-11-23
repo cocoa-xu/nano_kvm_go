@@ -6,12 +6,11 @@ defmodule NanoKVMGo.Thermal do
   @spec temperature(Path.t()) :: {:ok, float()} | {:error, term()}
   def temperature(root \\ "/") do
     with {:ok, dir} <- find_zone(Path.join(root, "sys/class/thermal")),
-         {:ok, text} <- File.read(Path.join(dir, "temp")),
-         {millidegrees, _rest} <- Integer.parse(text) do
-      {:ok, millidegrees / 1000}
-    else
-      :error -> {:error, :invalid_temperature}
-      {:error, _reason} = error -> error
+         {:ok, text} <- File.read(Path.join(dir, "temp")) do
+      case Integer.parse(text) do
+        {millidegrees, _rest} -> {:ok, millidegrees / 1000}
+        :error -> {:error, :invalid_temperature}
+      end
     end
   end
 

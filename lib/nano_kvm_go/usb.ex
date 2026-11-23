@@ -44,6 +44,8 @@ defmodule NanoKVMGo.USB do
 
   @type network_addresses() :: %{device_address: mac_address(), host_address: mac_address()}
 
+  @type option() :: {:serial_number, String.t() | nil} | {:kv, module()}
+
   @doc """
   The configfs directory of the gadget the NanoKVM-Go system sets up.
   """
@@ -58,11 +60,11 @@ defmodule NanoKVMGo.USB do
   ## Options
 
     * `:serial_number` - what the default network addresses are made from,
-      by default the board's (`boardid`'s)
+      by default the board's (`boardid`'s); `nil` for no default addresses
     * `:kv` - the U-Boot environment, where the network addresses persist,
       `Nerves.Runtime.KV` by default
   """
-  @spec gadget_options(keyword()) :: keyword()
+  @spec gadget_options([option()]) :: keyword()
   def gadget_options(opts \\ []) do
     opts = Options.validate!(opts, [:serial_number, kv: Nerves.Runtime.KV], &valid?/2)
     serial_number = Keyword.get_lazy(opts, :serial_number, &serial_number/0)

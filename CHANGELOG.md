@@ -17,6 +17,9 @@
   of raising `ArithmeticError`
 * `NanoKVMGo.Display.Canvas.text_width/2` counts code points, as
   `NanoKVMGo.Display.Canvas.text/6` draws them, not graphemes
+* `NanoKVMGo.Touch` and `NanoKVMGo.Button` read their devices with a port
+  program, `nano_kvm_go_input`, instead of a read that held one of the VM's
+  dirty I/O schedulers each; `:program` names another
 
 ## v0.2.1 (2026-11-23)
 

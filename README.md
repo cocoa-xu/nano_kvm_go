@@ -40,9 +40,9 @@ end
 ```
 
 The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`,
-`nano_kvm_go_playback` and `nano_kvm_go_edid`, C) are built for the target
-by the Nerves toolchain; the audio ones link alsa-lib, which the NanoKVM-Go
-system has. On hosts other than Linux they are not built, so the rest of the
+`nano_kvm_go_playback`, `nano_kvm_go_edid` and `nano_kvm_go_input`, C) are
+built for the target by the Nerves toolchain; the audio ones link alsa-lib,
+which the NanoKVM-Go system has. On hosts other than Linux they are not built, so the rest of the
 library still compiles and its tests run.
 
 ## Usage

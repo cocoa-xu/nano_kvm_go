@@ -1,16 +1,17 @@
 defmodule NanoKVMGo.Input do
   @moduledoc false
-  # Linux input devices: found by name, read in a linked process that sends
-  # the owner {:events, binary} of whole struct input_event (16 bytes on a
-  # 32-bit kernel), and exits when the device goes away.
+  # Linux input devices, found by their names and read by the
+  # nano_kvm_go_input port program: {:packet, 4} frames of a type byte and a
+  # payload, 0 a log line, 1 the events of one read, 8 bytes each. The end
+  # of its stdin stops it.
 
   @input_class "/sys/class/input"
-  @event_size 16
 
-  @spec event_size() :: pos_integer()
-  def event_size, do: @event_size
+  @type event() :: {type :: non_neg_integer(), code :: non_neg_integer(), value :: integer()}
 
-  @doc "The event device of the input device whose name starts with `name`."
+  @spec program() :: Path.t()
+  def program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_input")
+
   @spec find(String.t()) :: Path.t() | nil
   def find(name) do
     case File.ls(@input_class) do
@@ -31,30 +32,21 @@ defmodule NanoKVMGo.Input do
     end
   end
 
-  @doc "Starts the linked reader of a device."
-  @spec start_reader(pid(), Path.t()) :: pid()
-  def start_reader(owner, device), do: spawn_link(fn -> read(owner, device) end)
-
-  # Raw files block only their own process: reading waits here.
-  defp read(owner, device) do
-    case File.open(device, [:read, :raw, :binary]) do
-      {:ok, file} -> loop(owner, file)
-      {:error, reason} -> exit(reason)
-    end
+  @spec open(Path.t(), Path.t()) :: port()
+  def open(program, device) do
+    Port.open({:spawn_executable, program}, [:binary, {:packet, 4}, :exit_status, args: [device]])
   end
 
-  # An event a read: a raw read waits until it has all the bytes asked for.
-  defp loop(owner, file) do
-    case :file.read(file, @event_size) do
-      {:ok, data} ->
-        send(owner, {:events, data})
-        loop(owner, file)
+  @spec decode(binary()) :: {:events, [event()]} | {:log, String.t()} | :unknown
+  def decode(<<0, line::binary>>), do: {:log, line}
 
-      :eof ->
-        exit(:eof)
-
-      {:error, reason} ->
-        exit(reason)
-    end
+  def decode(<<1, events::binary>>) do
+    {:events,
+     for(
+       <<type::little-16, code::little-16, value::little-signed-32 <- events>>,
+       do: {type, code, value}
+     )}
   end
+
+  def decode(_packet), do: :unknown
 end

@@ -16,6 +16,8 @@ defmodule NanoKVMGo.Touch do
     * `:name` - the name to register, `NanoKVMGo.Touch` by default
     * `:device` - the input device, by default the one of the panel's
       driver (`hynitron-cst816x`)
+    * `:program` - the port program that reads it, the library's
+      `nano_kvm_go_input` by default
   """
   use GenServer
   require Logger
@@ -35,7 +37,7 @@ defmodule NanoKVMGo.Touch do
 
   @type event() :: {:down | :move | :up, non_neg_integer(), non_neg_integer()}
 
-  @type option() :: {:name, GenServer.name()} | {:device, Path.t()}
+  @type option() :: {:name, GenServer.name()} | {:device, Path.t()} | {:program, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
@@ -60,11 +62,11 @@ defmodule NanoKVMGo.Touch do
 
   @impl GenServer
   def init(opts) do
-    Process.flag(:trap_exit, true)
-
     state = %{
-      device: Keyword.get_lazy(opts, :device, &find_device/0),
-      reader: nil,
+      device: Keyword.get(opts, :device),
+      program: Keyword.get_lazy(opts, :program, &Input.program/0),
+      port: nil,
+      reading: nil,
       subscribers: %{},
       touching: false,
       x: 0,
@@ -72,7 +74,9 @@ defmodule NanoKVMGo.Touch do
       reported: nil
     }
 
-    {:ok, start_reader(state)}
+    if File.regular?(state.program),
+      do: {:ok, start_reader(state)},
+      else: {:stop, {:missing_program, state.program}}
   end
 
   @impl GenServer
@@ -88,23 +92,30 @@ defmodule NanoKVMGo.Touch do
   end
 
   @impl GenServer
-  def handle_info({:events, data}, state) do
-    {:noreply,
-     for(<<event::binary-size(16) <- data>>,
-       reduce: state,
-       do: (e -> handle_event(e, event))
-     )}
+  def handle_info({port, {:data, data}}, %{port: port} = state) do
+    case Input.decode(data) do
+      {:events, events} ->
+        {:noreply, Enum.reduce(events, state, &handle_event/2)}
+
+      {:log, line} ->
+        Logger.debug("nano_kvm_go_input: " <> line)
+        {:noreply, state}
+
+      :unknown ->
+        {:noreply, state}
+    end
   end
 
-  def handle_info({:EXIT, reader, reason}, %{reader: reader} = state) do
-    Logger.warning("nano_kvm_go: touch panel #{inspect(state.device)}: #{inspect(reason)}")
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    Logger.warning(
+      "nano_kvm_go: reading the touch panel from #{state.reading} stopped (#{status}), trying again"
+    )
+
     Process.send_after(self(), :retry, @retry_delay)
-    {:noreply, %{state | reader: nil}}
+    {:noreply, %{state | port: nil, reading: nil}}
   end
 
-  def handle_info(:retry, state) do
-    {:noreply, start_reader(%{state | device: state.device || find_device()})}
-  end
+  def handle_info(:retry, state), do: {:noreply, start_reader(state)}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
@@ -112,18 +123,11 @@ defmodule NanoKVMGo.Touch do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp handle_event(
-         state,
-         <<_time::binary-size(8), type::little-16, code::little-16, value::little-signed-32>>
-       ) do
-    case {type, code} do
-      {@ev_abs, @abs_x} -> %{state | x: value}
-      {@ev_abs, @abs_y} -> %{state | y: value}
-      {@ev_key, @btn_touch} -> %{state | touching: value == 1}
-      {@ev_syn, 0} -> report(state)
-      _other -> state
-    end
-  end
+  defp handle_event({@ev_abs, @abs_x, x}, state), do: %{state | x: x}
+  defp handle_event({@ev_abs, @abs_y, y}, state), do: %{state | y: y}
+  defp handle_event({@ev_key, @btn_touch, value}, state), do: %{state | touching: value == 1}
+  defp handle_event({@ev_syn, 0, _value}, state), do: report(state)
+  defp handle_event(_event, state), do: state
 
   # A report a frame, when the touch changed.
   defp report(state) do
@@ -146,12 +150,14 @@ defmodule NanoKVMGo.Touch do
   defp last_reported(true, nil, last), do: last
   defp last_reported(true, event, _last), do: event
 
-  defp start_reader(%{device: nil} = state) do
-    Process.send_after(self(), :retry, @retry_delay)
-    state
+  defp start_reader(state) do
+    case state.device || Input.find(@driver_name) do
+      nil ->
+        Process.send_after(self(), :retry, @retry_delay)
+        state
+
+      device ->
+        %{state | port: Input.open(state.program, device), reading: device}
+    end
   end
-
-  defp start_reader(state), do: %{state | reader: Input.start_reader(self(), state.device)}
-
-  defp find_device, do: Input.find(@driver_name)
 end

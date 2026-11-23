@@ -1,8 +1,9 @@
 # Builds the programs into the app's priv directory: nano_kvm_go_video
 # (V4L2 capture with the JPEG and H.264 encoders), nano_kvm_go_audio (ALSA
-# capture), nano_kvm_go_playback (ALSA playback) and nano_kvm_go_edid (the
-# EDID of the video input). elixir_make sets MIX_APP_PATH; Nerves sets CC,
-# CFLAGS and LDFLAGS for the target.
+# capture), nano_kvm_go_playback (ALSA playback), nano_kvm_go_edid (the
+# EDID of the video input) and nano_kvm_go_input (Linux input devices).
+# elixir_make sets MIX_APP_PATH; Nerves sets CC, CFLAGS and LDFLAGS for the
+# target.
 #
 # They need Linux headers: on other hosts (macOS) nothing is built, so that
 # the Elixir code still compiles and its tests run there. The ALSA programs
@@ -17,7 +18,7 @@ BUILD = $(MIX_APP_PATH)/obj
 CFLAGS ?= -O2
 CFLAGS += -Wall -Wextra -std=gnu11
 
-PROGRAMS = $(PREFIX)/nano_kvm_go_video $(PREFIX)/nano_kvm_go_edid
+PROGRAMS = $(PREFIX)/nano_kvm_go_video $(PREFIX)/nano_kvm_go_edid $(PREFIX)/nano_kvm_go_input
 ifeq ($(shell $(CC) $(CFLAGS) -E -include alsa/asoundlib.h -x c /dev/null >/dev/null 2>&1 && echo yes),yes)
 PROGRAMS += $(PREFIX)/nano_kvm_go_audio $(PREFIX)/nano_kvm_go_playback
 endif
@@ -34,6 +35,10 @@ $(PREFIX)/nano_kvm_go_video: $(BUILD)/nano_kvm_go_video.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lpthread
 
 $(PREFIX)/nano_kvm_go_edid: $(BUILD)/nano_kvm_go_edid.o
+	@mkdir -p $(PREFIX)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+$(PREFIX)/nano_kvm_go_input: $(BUILD)/nano_kvm_go_input.o
 	@mkdir -p $(PREFIX)
 	$(CC) $(LDFLAGS) -o $@ $^
 

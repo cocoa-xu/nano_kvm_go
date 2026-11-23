@@ -10,6 +10,8 @@ defmodule NanoKVMGo.Button do
 
     * `:name` - the name to register, `NanoKVMGo.Button` by default
     * `:device` - the input device, by default the one of the GPIO keys
+    * `:program` - the port program that reads it, the library's
+      `nano_kvm_go_input` by default
   """
   use GenServer
   require Logger
@@ -20,7 +22,7 @@ defmodule NanoKVMGo.Button do
   @ev_key 1
   @key_prog1 148
 
-  @type option() :: {:name, GenServer.name()} | {:device, Path.t()}
+  @type option() :: {:name, GenServer.name()} | {:device, Path.t()} | {:program, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
@@ -45,9 +47,17 @@ defmodule NanoKVMGo.Button do
 
   @impl GenServer
   def init(opts) do
-    Process.flag(:trap_exit, true)
-    device = Keyword.get_lazy(opts, :device, fn -> Input.find("gpio-keys") end)
-    {:ok, start_reader(%{device: device, reader: nil, subscribers: %{}})}
+    state = %{
+      device: Keyword.get(opts, :device),
+      program: Keyword.get_lazy(opts, :program, &Input.program/0),
+      port: nil,
+      reading: nil,
+      subscribers: %{}
+    }
+
+    if File.regular?(state.program),
+      do: {:ok, start_reader(state)},
+      else: {:stop, {:missing_program, state.program}}
   end
 
   @impl GenServer
@@ -63,26 +73,26 @@ defmodule NanoKVMGo.Button do
   end
 
   @impl GenServer
-  def handle_info({:events, data}, state) do
-    for <<_time::binary-size(8), @ev_key::little-16, @key_prog1::little-16,
-          value::little-signed-32 <- data>>,
-        value in [0, 1],
-        {pid, _monitor} <- state.subscribers do
-      send(pid, {__MODULE__, if(value == 1, do: :down, else: :up)})
+  def handle_info({port, {:data, data}}, %{port: port} = state) do
+    case Input.decode(data) do
+      {:events, events} -> Enum.each(events, &press(&1, state.subscribers))
+      {:log, line} -> Logger.debug("nano_kvm_go_input: " <> line)
+      :unknown -> :ok
     end
 
     {:noreply, state}
   end
 
-  def handle_info({:EXIT, reader, reason}, %{reader: reader} = state) do
-    Logger.warning("nano_kvm_go: button #{inspect(state.device)}: #{inspect(reason)}")
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    Logger.warning(
+      "nano_kvm_go: reading the button from #{state.reading} stopped (#{status}), trying again"
+    )
+
     Process.send_after(self(), :retry, @retry_delay)
-    {:noreply, %{state | reader: nil}}
+    {:noreply, %{state | port: nil, reading: nil}}
   end
 
-  def handle_info(:retry, state) do
-    {:noreply, start_reader(%{state | device: state.device || Input.find("gpio-keys")})}
-  end
+  def handle_info(:retry, state), do: {:noreply, start_reader(state)}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
@@ -90,10 +100,21 @@ defmodule NanoKVMGo.Button do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp start_reader(%{device: nil} = state) do
-    Process.send_after(self(), :retry, @retry_delay)
-    state
+  defp press({@ev_key, @key_prog1, value}, subscribers) when value in [0, 1] do
+    event = if value == 1, do: :down, else: :up
+    Enum.each(subscribers, fn {pid, _monitor} -> send(pid, {__MODULE__, event}) end)
   end
 
-  defp start_reader(state), do: %{state | reader: Input.start_reader(self(), state.device)}
+  defp press(_event, _subscribers), do: :ok
+
+  defp start_reader(state) do
+    case state.device || Input.find("gpio-keys") do
+      nil ->
+        Process.send_after(self(), :retry, @retry_delay)
+        state
+
+      device ->
+        %{state | port: Input.open(state.program, device), reading: device}
+    end
+  end
 end

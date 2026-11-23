@@ -113,8 +113,8 @@ defmodule NanoKVMGo.MixProject do
 
   defp make_error_message do
     """
-    Could not build the nano_kvm_go_video port program. It needs a Linux C
-    toolchain with the V4L2 headers; Nerves provides one for the NanoKVM-Go.
+    Could not build the port programs. They need a Linux C toolchain with
+    the kernel's headers; Nerves provides one for the NanoKVM-Go.
     """
   end
 end

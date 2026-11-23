@@ -90,28 +90,30 @@ defmodule NanoKVMGo.EDID do
   defp extension_timings(_block), do: []
 
   defp timing(
-         <<clock::little-16, ha_lo, hb_lo, h_hi, va_lo, vb_lo, v_hi, _sync::binary-size(4),
-           _size::binary-size(3), _border::binary-size(2), flags>>
+         <<clock::little-16, ha_lo, hb_lo, ha_hi::4, hb_hi::4, va_lo, vb_lo, va_hi::4, vb_hi::4,
+           _sync::binary-size(4), _size::binary-size(3), _border::binary-size(2), interlaced::1,
+           _flags::7>>
        )
        when clock > 0 do
-    width = ha_lo + ((h_hi &&& 0xF0) <<< 4)
-    hblank = hb_lo + ((h_hi &&& 0x0F) <<< 8)
-    height = va_lo + ((v_hi &&& 0xF0) <<< 4)
-    vblank = vb_lo + ((v_hi &&& 0x0F) <<< 8)
-    interlaced = (flags &&& 0x80) != 0
-    pixel_clock_khz = clock * 10
-    total = (width + hblank) * (height + vblank)
-    refresh = pixel_clock_khz * 1000 / total * if(interlaced, do: 2, else: 1)
+    width = ha_hi * 256 + ha_lo
+    height = va_hi * 256 + va_lo
+    fields = if interlaced == 1, do: 2, else: 1
 
-    [
-      %{
-        width: width,
-        height: if(interlaced, do: height * 2, else: height),
-        refresh: Float.round(refresh, 2),
-        pixel_clock_khz: pixel_clock_khz,
-        interlaced: interlaced
-      }
-    ]
+    case (width + hb_hi * 256 + hb_lo) * (height + vb_hi * 256 + vb_lo) do
+      0 ->
+        []
+
+      total ->
+        [
+          %{
+            width: width,
+            height: height * fields,
+            refresh: Float.round(clock * 10_000 / total * fields, 2),
+            pixel_clock_khz: clock * 10,
+            interlaced: interlaced == 1
+          }
+        ]
+    end
   end
 
   defp timing(_descriptor), do: []

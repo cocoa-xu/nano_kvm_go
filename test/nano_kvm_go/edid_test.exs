@@ -42,6 +42,17 @@ defmodule NanoKVMGo.EDIDTest do
     refute Enum.any?(modes, & &1.interlaced)
   end
 
+  test "skips a detailed timing without a size" do
+    <<head::binary-size(54), _timing::binary-size(18), tail::binary-size(55), _checksum,
+      extension::binary>> = @stock
+
+    block = head <> <<1, 0>> <> :binary.copy(<<0>>, 16) <> tail
+    checksum = rem(256 - rem(Enum.sum(:binary.bin_to_list(block)), 256), 256)
+
+    assert {:ok, %{modes: modes}} = NanoKVMGo.EDID.decode(block <> <<checksum>> <> extension)
+    assert Enum.map(modes, &{&1.width, &1.height}) == List.duplicate({2560, 1440}, 3)
+  end
+
   test "refuses what is not an EDID" do
     assert NanoKVMGo.EDID.decode(<<1, 2, 3>>) == {:error, :invalid_edid}
     assert NanoKVMGo.EDID.decode(binary_part(@stock, 0, 127)) == {:error, :invalid_edid}

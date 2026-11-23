@@ -12,6 +12,8 @@
   instead of writing the mode `nil`
 * `NanoKVMGo.Expansion` gives its GPIOs and PWM channels back when its
   supervisor stops it, stopping the PWM outputs
+* `NanoKVMGo.EDID.decode/1` skips a detailed timing without a size, instead
+  of raising `ArithmeticError`
 
 ## v0.2.1 (2026-11-23)
 

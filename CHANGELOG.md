@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 (2026-11-23)
 
 * `NanoKVMGo.USB.gadget_options/1` gives the device controller's endpoints,
   seven IN and seven OUT, for `Kuroneko.Gadget` to count functions against

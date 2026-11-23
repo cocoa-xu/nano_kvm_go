@@ -133,21 +133,41 @@ defmodule NanoKVMGo.Display do
   end
 
   defp read_info(dir) do
-    with {:ok, size} <- File.read(Path.join(dir, "virtual_size")),
-         [width, height] <- size |> String.trim() |> String.split(","),
-         {:ok, stride} <- File.read(Path.join(dir, "stride")),
-         {:ok, bits} <- File.read(Path.join(dir, "bits_per_pixel")),
-         "16" <- String.trim(bits) do
-      {:ok,
-       %{
-         width: String.to_integer(width),
-         height: String.to_integer(height),
-         stride: stride |> String.trim() |> String.to_integer()
-       }}
-    else
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :unsupported_framebuffer}
+    with {:ok, {width, height}} <- read_size(dir),
+         {:ok, stride} <- read_stride(dir),
+         :ok <- check_depth(dir) do
+      {:ok, %{width: width, height: height, stride: stride}}
     end
+  end
+
+  defp read_size(dir) do
+    with {:ok, size} <- read_attribute(dir, "virtual_size") do
+      case Enum.map(String.split(size, ","), &Integer.parse/1) do
+        [{width, ""}, {height, ""}] -> {:ok, {width, height}}
+        _other -> {:error, {:invalid_attribute, "virtual_size", size}}
+      end
+    end
+  end
+
+  defp read_stride(dir) do
+    with {:ok, text} <- read_attribute(dir, "stride") do
+      case Integer.parse(text) do
+        {stride, ""} -> {:ok, stride}
+        _other -> {:error, {:invalid_attribute, "stride", text}}
+      end
+    end
+  end
+
+  defp check_depth(dir) do
+    case read_attribute(dir, "bits_per_pixel") do
+      {:ok, "16"} -> :ok
+      {:ok, _bits} -> {:error, :unsupported_framebuffer}
+      error -> error
+    end
+  end
+
+  defp read_attribute(dir, name) do
+    with {:ok, text} <- File.read(Path.join(dir, name)), do: {:ok, String.trim(text)}
   end
 
   defp show_pixels(%{info: info} = state, pixels) do

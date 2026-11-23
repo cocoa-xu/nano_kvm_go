@@ -97,6 +97,17 @@ defmodule NanoKVMGo.DisplayTest do
     end
   end
 
+  test "tells what it cannot draw on", %{tmp_dir: tmp_dir} do
+    {sysfs, _dev} = fake(tmp_dir, 4, 2, 8)
+    display = start_supervised!({Display, framebuffer: sysfs, root: tmp_dir, name: nil})
+
+    File.write!(Path.join(sysfs, "bits_per_pixel"), "32\n")
+    assert Display.info(display) == {:error, :unsupported_framebuffer}
+
+    File.write!(Path.join(sysfs, "stride"), "wide\n")
+    assert Display.info(display) == {:error, {:invalid_attribute, "stride", "wide"}}
+  end
+
   test "without a framebuffer, errors", %{tmp_dir: tmp_dir} do
     display = start_supervised!({Display, root: tmp_dir, name: nil})
     assert Display.info(display) == {:error, :no_framebuffer}

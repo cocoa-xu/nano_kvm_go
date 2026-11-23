@@ -88,7 +88,6 @@ defmodule NanoKVMGo.MixProject do
       groups_for_modules: [
         "Video and audio": [
           NanoKVMGo.Video,
-          NanoKVMGo.Video.Input,
           NanoKVMGo.EDID,
           NanoKVMGo.Audio,
           NanoKVMGo.Microphone

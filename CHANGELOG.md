@@ -37,6 +37,14 @@
   persist: false)`. A mode that is none of the modes raises
   `FunctionClauseError`, instead of returning `{:error, {:unknown_mode,
   mode}}`, which now means one the kernel does not offer
+* `NanoKVMGo.EDID.valid?/1` tells an EDID that `NanoKVMGo.Video.set_edid/2`
+  takes; `set_edid/2` raises `ArgumentError` for another, instead of
+  returning `{:error, :invalid_edid}`
+* `NanoKVMGo.Video.edid/1` and `NanoKVMGo.Video.set_edid/2` take the
+  `:device` and the `:program` as options, and tell a failure of the EDID
+  program as `{:error, {:exit_status, status, output}}` instead of a string
+* `NanoKVMGo.Video.input/0` is the input's type, `t:NanoKVMGo.Video.input/0`,
+  instead of `t:NanoKVMGo.Video.Input.t/0`
 
 ## v0.2.1 (2026-11-23)
 

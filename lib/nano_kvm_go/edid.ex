@@ -1,6 +1,6 @@
 defmodule NanoKVMGo.EDID do
   @moduledoc """
-  Decodes an EDID, such as the one `NanoKVMGo.Video.edid/0` returns: who made
+  Decodes an EDID, such as the one `NanoKVMGo.Video.edid/1` returns: who made
   the display it describes, its name and the modes it lists.
 
       {:ok, edid} = NanoKVMGo.Video.edid()
@@ -13,7 +13,9 @@ defmodule NanoKVMGo.EDID do
 
   import Bitwise
 
-  alias NanoKVMGo.Video.EDID, as: Check
+  @block 128
+  @max_blocks 4
+  @header <<0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>>
 
   @typedoc "A detailed timing."
   @type mode() :: %{
@@ -37,11 +39,24 @@ defmodule NanoKVMGo.EDID do
         }
 
   @doc """
+  Whether `edid` is an EDID: one to four blocks of 128 bytes, the first
+  with the EDID header, each with a valid checksum. `NanoKVMGo.Video.set_edid/2`
+  takes such an EDID.
+  """
+  @spec valid?(term()) :: boolean()
+  def valid?(<<@header, _rest::binary>> = edid)
+      when rem(byte_size(edid), @block) == 0 and byte_size(edid) <= @block * @max_blocks do
+    Enum.all?(blocks(edid), &(rem(Enum.sum(:binary.bin_to_list(&1)), 256) == 0))
+  end
+
+  def valid?(_edid), do: false
+
+  @doc """
   Decodes an EDID of one to four blocks with valid checksums.
   """
   @spec decode(binary()) :: {:ok, t()} | {:error, :invalid_edid}
   def decode(edid) do
-    with :ok <- Check.validate(edid) do
+    if valid?(edid) do
       <<_header::binary-size(8), manufacturer::big-16, product::little-16, serial::little-32,
         week, year, version, revision, _basic::binary-size(34), descriptors::binary-size(72),
         extensions, _checksum, rest::binary>> = edid
@@ -58,6 +73,8 @@ defmodule NanoKVMGo.EDID do
          modes: timings(descriptors) ++ Enum.flat_map(blocks(rest), &extension_timings/1),
          extensions: extensions
        }}
+    else
+      {:error, :invalid_edid}
     end
   end
 
@@ -119,5 +136,5 @@ defmodule NanoKVMGo.EDID do
   defp timing(_descriptor), do: []
 
   defp chunks(binary), do: for(<<chunk::binary-size(18) <- binary>>, do: chunk)
-  defp blocks(binary), do: for(<<block::binary-size(128) <- binary>>, do: block)
+  defp blocks(binary), do: for(<<block::binary-size(@block) <- binary>>, do: block)
 end

@@ -5,12 +5,10 @@ defmodule NanoKVMGo.Video.Protocol do
   # stdin (framed too: the program only looks for the command bytes). The
   # end of its stdin stops it.
 
-  alias NanoKVMGo.Video.Input
-
   @type packet() ::
           {:log, String.t()}
           | {:h264, :key | :delta, binary()}
-          | {:input, Input.t()}
+          | {:input, NanoKVMGo.Video.input()}
           | :unknown
 
   # Exit status of the program when the input changes: start it again.
@@ -38,7 +36,7 @@ defmodule NanoKVMGo.Video.Protocol do
   @spec input_changed?(non_neg_integer()) :: boolean()
   def input_changed?(status), do: status == @exit_input_changed
 
-  @spec parse_input(String.t()) :: {:ok, Input.t()} | :error
+  @spec parse_input(String.t()) :: {:ok, NanoKVMGo.Video.input()} | :error
   def parse_input("none"), do: {:ok, :none}
   def parse_input("unsupported"), do: {:ok, :unsupported}
 

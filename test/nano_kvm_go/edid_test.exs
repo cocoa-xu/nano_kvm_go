@@ -17,6 +17,38 @@ defmodule NanoKVMGo.EDIDTest do
            case: :lower
          )
 
+  @header <<0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>>
+
+  # A block with the given bytes after the header and a valid checksum.
+  defp block(fill, extensions \\ 0) do
+    checksummed(@header <> :binary.copy(<<fill>>, 118) <> <<extensions>>)
+  end
+
+  defp extension(fill), do: checksummed(:binary.copy(<<fill>>, 127))
+
+  defp checksummed(body) do
+    body <> <<rem(256 - rem(Enum.sum(:binary.bin_to_list(body)), 256), 256)>>
+  end
+
+  test "an EDID is one to four blocks with valid checksums" do
+    assert NanoKVMGo.EDID.valid?(@stock)
+    assert NanoKVMGo.EDID.valid?(block(1))
+    assert NanoKVMGo.EDID.valid?(block(1, 1) <> extension(2))
+    assert NanoKVMGo.EDID.valid?(block(1, 3) <> extension(2) <> extension(3) <> extension(4))
+
+    refute NanoKVMGo.EDID.valid?(<<>>)
+    refute NanoKVMGo.EDID.valid?(binary_part(block(1), 0, 127))
+    refute NanoKVMGo.EDID.valid?(:binary.copy(<<0>>, 128))
+    refute NanoKVMGo.EDID.valid?(block(1) <> extension(2) <> <<1>>)
+
+    <<start::binary-size(20), byte, rest::binary>> = block(1)
+    refute NanoKVMGo.EDID.valid?(start <> <<byte + 1>> <> rest)
+
+    five = block(1, 4) <> extension(2) <> extension(3) <> extension(4) <> extension(5)
+    refute NanoKVMGo.EDID.valid?(five)
+    refute NanoKVMGo.EDID.valid?(nil)
+  end
+
   test "decodes the identity and the name" do
     assert {:ok, edid} = NanoKVMGo.EDID.decode(@stock)
     assert edid.manufacturer == "SPD"
@@ -46,10 +78,9 @@ defmodule NanoKVMGo.EDIDTest do
     <<head::binary-size(54), _timing::binary-size(18), tail::binary-size(55), _checksum,
       extension::binary>> = @stock
 
-    block = head <> <<1, 0>> <> :binary.copy(<<0>>, 16) <> tail
-    checksum = rem(256 - rem(Enum.sum(:binary.bin_to_list(block)), 256), 256)
+    block = checksummed(head <> <<1, 0>> <> :binary.copy(<<0>>, 16) <> tail)
 
-    assert {:ok, %{modes: modes}} = NanoKVMGo.EDID.decode(block <> <<checksum>> <> extension)
+    assert {:ok, %{modes: modes}} = NanoKVMGo.EDID.decode(block <> extension)
     assert Enum.map(modes, &{&1.width, &1.height}) == List.duplicate({2560, 1440}, 3)
   end
 

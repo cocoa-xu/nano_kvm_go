@@ -23,6 +23,10 @@ defmodule NanoKVMGo.VideoTest do
   done
   """
 
+  # One block, no name or modes, with a valid checksum.
+  @edid <<0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>> <>
+          :binary.copy(<<0>>, 119) <> <<6>>
+
   # A capture of the fake program, once it runs.
   defp start_video(tmp_dir) do
     program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), @fake)
@@ -82,6 +86,53 @@ defmodule NanoKVMGo.VideoTest do
         ] do
       assert_raise ArgumentError, fn -> Video.start_link([name: nil] ++ opts) end
     end
+  end
+
+  test "reads the EDID of the device", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "edid.bin"), @edid)
+
+    program =
+      FakeProgram.write!(
+        Path.join(tmp_dir, "fake_edid"),
+        ~s(if [ "$1" = /dev/video0 ]; then cat "#{tmp_dir}/edid.bin"; else echo garbage; fi\n)
+      )
+
+    assert Video.edid(device: "/dev/video0", program: program) == {:ok, @edid}
+    assert Video.edid(device: "/dev/video1", program: program) == {:error, :invalid_edid}
+    assert Video.edid(program: program) == {:error, :no_device}
+  end
+
+  test "reports why the EDID program failed", %{tmp_dir: tmp_dir} do
+    program =
+      FakeProgram.write!(
+        Path.join(tmp_dir, "fake_edid"),
+        "echo 'VIDIOC_G_EDID: Inappropriate ioctl' >&2\nexit 1\n"
+      )
+
+    assert Video.edid(device: "/dev/video0", program: program) ==
+             {:error, {:exit_status, 1, "VIDIOC_G_EDID: Inappropriate ioctl"}}
+
+    missing = Path.join(tmp_dir, "missing")
+
+    assert Video.edid(device: "/dev/video0", program: missing) ==
+             {:error, {:missing_program, missing}}
+  end
+
+  test "stores a valid EDID in hex", %{tmp_dir: tmp_dir} do
+    out = Path.join(tmp_dir, "stored")
+
+    program =
+      FakeProgram.write!(
+        Path.join(tmp_dir, "fake_edid"),
+        ~s(printf '%s %s' "$1" "$2" > "#{out}"\n)
+      )
+
+    assert Video.set_edid(@edid, device: "/dev/video0", program: program) == :ok
+    assert File.read!(out) == "/dev/video0 " <> Base.encode16(@edid)
+
+    File.rm!(out)
+    assert_raise ArgumentError, fn -> Video.set_edid(<<1, 2, 3>>, program: program) end
+    refute File.exists?(out)
   end
 
   test "stops without the port program", %{tmp_dir: tmp_dir} do

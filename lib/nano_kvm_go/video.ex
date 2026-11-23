@@ -35,7 +35,7 @@ defmodule NanoKVMGo.Video do
   Subscribers receive:
 
     * `{NanoKVMGo.Video, {:input, input}}` when subscribing and when the input
-      changes, see `t:NanoKVMGo.Video.Input.t/0`
+      changes, see `t:input/0`
     * `{NanoKVMGo.Video, {:h264, :key | :delta, data}}`, one access unit each,
       starting with a keyframe. The SPS and PPS come before every keyframe.
 
@@ -45,21 +45,30 @@ defmodule NanoKVMGo.Video do
 
   ## EDID
 
-  The bridge presents an EDID to the source, kept in its flash: `edid/0`
-  reads it and `set_edid/1` replaces it, with or without the process.
+  The bridge presents an EDID to the source, kept in its flash: `edid/1`
+  reads it and `set_edid/2` replaces it, with or without the process.
   """
   use GenServer
   require Logger
 
+  alias NanoKVMGo.EDID
   alias NanoKVMGo.Options
   alias NanoKVMGo.Video.Devices
-  alias NanoKVMGo.Video.EDID
-  alias NanoKVMGo.Video.Input
   alias NanoKVMGo.Video.Protocol
 
   @restart_delay 2_000
   @input_restart_delay 100
   @max_backlog 30
+
+  @typedoc """
+  The signal at the input, as the LT7911EXC bridge reports it: the size of
+  a frame in pixels and the frame rate, `:none` without a signal, or
+  `:unsupported` for a signal the bridge cannot pass on.
+  """
+  @type input() ::
+          %{width: pos_integer(), height: pos_integer(), fps: non_neg_integer()}
+          | :none
+          | :unsupported
 
   @typedoc """
   The video devices: the capture's, the JPEG encoder's and, for H.264, the
@@ -80,9 +89,11 @@ defmodule NanoKVMGo.Video do
           | {:devices, devices() | nil}
           | {:program, Path.t()}
 
+  @type edid_option() :: {:device, Path.t()} | {:program, Path.t()}
+
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
-          {NanoKVMGo.Video, {:input, Input.t()} | {:h264, :key | :delta, binary()}}
+          {NanoKVMGo.Video, {:input, input()} | {:h264, :key | :delta, binary()}}
 
   @doc """
   Starts the capture. See the module documentation for the options.
@@ -130,7 +141,7 @@ defmodule NanoKVMGo.Video do
   @doc """
   The current input, `nil` until known.
   """
-  @spec input(GenServer.server()) :: Input.t() | nil
+  @spec input(GenServer.server()) :: input() | nil
   def input(server \\ __MODULE__), do: GenServer.call(server, :input)
 
   @doc """
@@ -158,21 +169,47 @@ defmodule NanoKVMGo.Video do
   The EDID the input presents to the source: one to four blocks of 128 bytes.
 
   The first read takes over a second, as the bridge reads its flash.
-  `NanoKVMGo.EDID.decode/1` tells what it says.
+  `NanoKVMGo.EDID.decode/1` tells what it says. A failure of the
+  `nano_kvm_go_edid` program gives `{:error, {:exit_status, status,
+  output}}`.
+
+  ## Options
+
+    * `:device` - the video capture device, by default the board's
+    * `:program` - the program that reads and stores the EDID, the
+      library's `nano_kvm_go_edid` by default
   """
-  @spec edid() :: {:ok, binary()} | {:error, term()}
-  def edid, do: EDID.read(edid_program(), Devices.capture())
+  @spec edid([edid_option()]) :: {:ok, binary()} | {:error, term()}
+  def edid(opts \\ []) do
+    opts = Options.validate!(opts, [:device, program: edid_program()], &valid?/2)
+
+    with {:ok, device} <- capture_device(opts),
+         {:ok, edid} <- run_edid(opts[:program], [device]) do
+      if EDID.valid?(edid), do: {:ok, edid}, else: {:error, :invalid_edid}
+    end
+  end
 
   @doc """
-  Stores an EDID for the input to present to the source: one to four blocks
-  of 128 bytes, each with a valid checksum. Takes a few seconds.
+  Stores an EDID for the input to present to the source, one that
+  `NanoKVMGo.EDID.valid?/1` takes. Takes a few seconds.
 
   The source reads it when it next connects, for example when the NanoKVM is
-  plugged in again. Read the current EDID with `edid/0` first to be able to
-  go back to it.
+  plugged in again. Read the current EDID with `edid/1` first to be able to
+  go back to it. The options are those of `edid/1`.
   """
-  @spec set_edid(binary()) :: :ok | {:error, term()}
-  def set_edid(edid), do: EDID.write(edid_program(), Devices.capture(), edid)
+  @spec set_edid(binary(), [edid_option()]) :: :ok | {:error, term()}
+  def set_edid(edid, opts \\ []) do
+    opts = Options.validate!(opts, [:device, program: edid_program()], &valid?/2)
+
+    if not EDID.valid?(edid) do
+      raise ArgumentError, "not an EDID: #{inspect(edid, limit: 16)}"
+    end
+
+    with {:ok, device} <- capture_device(opts),
+         {:ok, _output} <- run_edid(opts[:program], [device, Base.encode16(edid)]) do
+      :ok
+    end
+  end
 
   @impl GenServer
   def init(config) do
@@ -411,6 +448,24 @@ defmodule NanoKVMGo.Video do
 
   defp edid_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_edid")
 
+  defp capture_device(opts) do
+    case Keyword.get_lazy(opts, :device, &Devices.capture/0) do
+      nil -> {:error, :no_device}
+      device -> {:ok, device}
+    end
+  end
+
+  defp run_edid(program, args) do
+    if File.regular?(program) do
+      case System.cmd(program, args, stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {output, status} -> {:error, {:exit_status, status, String.trim(output)}}
+      end
+    else
+      {:error, {:missing_program, program}}
+    end
+  end
+
   defp valid?(:name, _name), do: true
   defp valid?(:mjpeg_port, port), do: port in 1..65_535
   defp valid?(:mjpeg_token, nil), do: true
@@ -424,5 +479,6 @@ defmodule NanoKVMGo.Video do
        do: is_binary(devices[:h264]) or is_nil(devices[:h264])
 
   defp valid?(:devices, _devices), do: false
+  defp valid?(:device, device), do: is_binary(device)
   defp valid?(:program, program), do: is_binary(program)
 end

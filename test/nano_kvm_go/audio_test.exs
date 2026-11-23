@@ -2,7 +2,7 @@ defmodule NanoKVMGo.AudioTest do
   # One fake program at a time, as in NanoKVMGo.VideoTest.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.{Audio, FakeProgram, Wait}
+  alias NanoKVMGo.{Audio, FakeProgram, Peer, Wait}
   alias NanoKVMGo.Audio.Protocol
 
   @moduletag :tmp_dir
@@ -59,6 +59,14 @@ defmodule NanoKVMGo.AudioTest do
 
     assert %{port: nil, subscribers: subscribers} = :sys.get_state(audio)
     assert subscribers == %{}
+  end
+
+  test "sends to a subscriber on another node", %{audio: audio} do
+    subscriber = Peer.spawn_caller(audio, :subscribe)
+
+    # The format and two periods.
+    Wait.until(fn -> Peer.message_queue_len(subscriber) == 3 end)
+    assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
   end
 
   test "hands the video device with the rate control to the program", %{program: program} do

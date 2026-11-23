@@ -6,6 +6,8 @@
   request or samples come as their program exits, instead of crashing
 * `NanoKVMGo.Display.show/2` keeps the framebuffer open after a picture of
   the wrong size, instead of opening it again for each
+* `NanoKVMGo.Video` and `NanoKVMGo.Audio` send to subscribers on other
+  nodes, instead of crashing on their first message
 
 ## v0.2.1 (2026-11-23)
 

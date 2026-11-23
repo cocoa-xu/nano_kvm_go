@@ -33,7 +33,8 @@ defmodule NanoKVMGo.Video do
       starting with a keyframe. The SPS and PPS come before every keyframe.
 
   A subscriber with more than 30 messages waiting misses the deltas until
-  the next keyframe, which is then asked for.
+  the next keyframe, which is then asked for. One on another node gets them
+  all: its messages waiting cannot be counted.
 
   ## EDID
 
@@ -277,12 +278,15 @@ defmodule NanoKVMGo.Video do
 
   defp deliver(_pid, subscriber, :delta, _au), do: subscriber
 
-  defp backlog(pid) do
+  # Process.info/2 takes local processes only.
+  defp backlog(pid) when node(pid) == node() do
     case Process.info(pid, :message_queue_len) do
       {:message_queue_len, n} -> n
       nil -> 0
     end
   end
+
+  defp backlog(_pid), do: 0
 
   defp notify(state, event) do
     Enum.each(state.subscribers, fn {pid, _subscriber} -> send(pid, {__MODULE__, event}) end)

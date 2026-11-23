@@ -39,7 +39,8 @@ defmodule NanoKVMGo.Audio do
     * `{NanoKVMGo.Audio, source, {:pcm, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more
-  than a second of audio waiting misses the next until it catches up.
+  than a second of audio waiting misses the next until it catches up; one
+  on another node gets them all, as its messages waiting cannot be counted.
   """
   use GenServer
   require Logger
@@ -196,7 +197,7 @@ defmodule NanoKVMGo.Audio do
 
   defp handle_packet({:pcm, pcm}, state) do
     Enum.each(state.subscribers, fn {pid, _monitor} ->
-      if keeping_up?(pid, state.config),
+      if backlog(pid) * state.config.period_ms < 1000,
         do: send(pid, {__MODULE__, state.config.source, {:pcm, pcm}})
     end)
 
@@ -218,13 +219,15 @@ defmodule NanoKVMGo.Audio do
 
   defp handle_packet(:unknown, state), do: state
 
-  # About a second of audio waiting is enough.
-  defp keeping_up?(pid, config) do
+  # Process.info/2 takes local processes only.
+  defp backlog(pid) when node(pid) == node() do
     case Process.info(pid, :message_queue_len) do
-      {:message_queue_len, n} -> n * config.period_ms < 1000
-      nil -> false
+      {:message_queue_len, n} -> n
+      nil -> 0
     end
   end
+
+  defp backlog(_pid), do: 0
 
   defp drop_subscriber(state, pid) do
     case Map.pop(state.subscribers, pid) do

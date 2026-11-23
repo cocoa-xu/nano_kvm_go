@@ -3,7 +3,7 @@ defmodule NanoKVMGo.VideoTest do
   # other's pipes open.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.{FakeProgram, Video, Wait}
+  alias NanoKVMGo.{FakeProgram, Peer, Video, Wait}
 
   @moduletag :tmp_dir
 
@@ -46,6 +46,15 @@ defmodule NanoKVMGo.VideoTest do
     assert :ok = Video.unsubscribe(video)
     Video.request_keyframe(video)
     refute_receive {Video, _event}, 100
+  end
+
+  test "streams to a subscriber on another node", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    subscriber = Peer.spawn_caller(video, :subscribe)
+
+    # The input, a keyframe and a delta.
+    Wait.until(fn -> Peer.message_queue_len(subscriber) == 3 end)
+    assert Video.input(video) == %{width: 1920, height: 1080, fps: 60}
   end
 
   @tag :capture_log

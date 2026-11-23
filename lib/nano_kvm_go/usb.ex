@@ -32,6 +32,8 @@ defmodule NanoKVMGo.USB do
   """
   import Bitwise
 
+  alias NanoKVMGo.Options
+
   # The U-Boot variables the system reads the addresses from at boot
   # (U-Boot's own names).
   @address_variables %{device_address: "usbnet_devaddr", host_address: "usbnet_hostaddr"}
@@ -61,8 +63,9 @@ defmodule NanoKVMGo.USB do
   """
   @spec gadget_options(keyword()) :: keyword()
   def gadget_options(opts \\ []) do
+    opts = Options.validate!(opts, [:serial_number, kv: Nerves.Runtime.KV], &valid?/2)
     serial_number = Keyword.get_lazy(opts, :serial_number, &serial_number/0)
-    kv = Keyword.get(opts, :kv, Nerves.Runtime.KV)
+    kv = opts[:kv]
 
     [
       gadget: @gadget,
@@ -135,4 +138,9 @@ defmodule NanoKVMGo.USB do
     # No boardid: not a Nerves device.
     ErlangError -> nil
   end
+
+  defp valid?(:serial_number, serial_number),
+    do: is_binary(serial_number) or is_nil(serial_number)
+
+  defp valid?(:kv, kv), do: is_atom(kv)
 end

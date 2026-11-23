@@ -21,7 +21,13 @@ defmodule NanoKVMGo.Audio do
       rate most computers send at
     * `:channels` - the channels to capture where the device has them, 2 by
       default; the USB speaker has the channels it was set up with
-    * `:period_ms` - the audio in each message, 20 ms by default
+    * `:period_ms` - the audio in each message, 1 to 1000 ms, 20 ms by
+      default
+    * `:video_device` - for the `:hdmi` source, the video capture device
+      whose driver reports the input's sample rate, by default the board's,
+      found each time the capture starts; `nil` to measure the rate instead
+    * `:program` - the port program, the library's `nano_kvm_go_audio` by
+      default
 
   ## Messages
 
@@ -46,6 +52,7 @@ defmodule NanoKVMGo.Audio do
   require Logger
 
   alias NanoKVMGo.Audio.Protocol
+  alias NanoKVMGo.Options
   alias NanoKVMGo.Video.Devices
 
   @restart_delay 2_000
@@ -71,7 +78,9 @@ defmodule NanoKVMGo.Audio do
           | {:device, String.t()}
           | {:rate, pos_integer()}
           | {:channels, pos_integer()}
-          | {:period_ms, pos_integer()}
+          | {:period_ms, 1..1000}
+          | {:video_device, Path.t() | nil}
+          | {:program, Path.t()}
 
   @doc """
   A child specification, with the `:name` as its id: one process per
@@ -87,8 +96,32 @@ defmodule NanoKVMGo.Audio do
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [
+          :device,
+          :video_device,
+          name: __MODULE__,
+          source: :hdmi,
+          rate: 48_000,
+          channels: 2,
+          period_ms: 20,
+          program: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_audio")
+        ],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    source = Keyword.fetch!(opts, :source)
+
+    config =
+      opts
+      |> Keyword.put_new(:device, @devices[source])
+      |> Keyword.put_new(:video_device, if(source == :hdmi, do: :found))
+      |> Map.new()
+
+    GenServer.start_link(__MODULE__, config, name: name)
   end
 
   @doc """
@@ -110,43 +143,12 @@ defmodule NanoKVMGo.Audio do
   def format(server \\ __MODULE__), do: GenServer.call(server, :format)
 
   @impl GenServer
-  def init(opts) do
-    source = Keyword.get(opts, :source, :hdmi)
-
-    unless source in [:hdmi, :usb] do
-      raise ArgumentError, "invalid :source: #{inspect(source)}"
-    end
-
-    config = %{
-      source: source,
-      device: Keyword.get(opts, :device, @devices[source]),
-      rate: Keyword.get(opts, :rate, 48_000),
-      channels: Keyword.get(opts, :channels, 2),
-      period_ms: Keyword.get(opts, :period_ms, 20),
-      # For tests: another program than the one built with the library, and
-      # another video device (or none) than the capture device.
-      program: Keyword.get_lazy(opts, :program, &default_program/0),
-      video_device: Keyword.get(opts, :video_device, if(source == :hdmi, do: :auto))
-    }
-
-    check_config!(config)
-
+  def init(config) do
     state = %{config: config, port: nil, subscribers: %{}, format: nil, restart: nil}
 
     if File.regular?(config.program),
       do: {:ok, state},
       else: {:stop, {:missing_program, config.program}}
-  end
-
-  defp check_config!(config) do
-    valid? =
-      Enum.all?([config.rate, config.channels], &(is_integer(&1) and &1 > 0)) and
-        is_integer(config.period_ms) and config.period_ms in 1..1000
-
-    unless valid? do
-      raise ArgumentError,
-            "invalid :rate, :channels or :period_ms: #{inspect(Map.take(config, [:rate, :channels, :period_ms]))}"
-    end
   end
 
   @impl GenServer
@@ -265,8 +267,7 @@ defmodule NanoKVMGo.Audio do
 
   defp ensure_running(state), do: state
 
-  # The device with the bridge's rate control.
-  defp video_device(:auto), do: Devices.capture()
+  defp video_device(:found), do: Devices.capture()
   defp video_device(device), do: device
 
   defp stop(%{port: nil} = state), do: cancel_restart(state)
@@ -284,5 +285,12 @@ defmodule NanoKVMGo.Audio do
     %{state | restart: nil}
   end
 
-  defp default_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_audio")
+  defp valid?(:name, _name), do: true
+  defp valid?(:source, source), do: source in [:hdmi, :usb]
+  defp valid?(:device, device), do: is_binary(device)
+  defp valid?(:rate, rate), do: is_integer(rate) and rate > 0
+  defp valid?(:channels, channels), do: is_integer(channels) and channels > 0
+  defp valid?(:period_ms, period_ms), do: period_ms in 1..1000
+  defp valid?(:video_device, device), do: is_binary(device) or is_nil(device)
+  defp valid?(:program, program), do: is_binary(program)
 end

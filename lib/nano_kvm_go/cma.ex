@@ -28,6 +28,8 @@ defmodule NanoKVMGo.CMA do
   `cancel_trial/1` drops it.
   """
 
+  alias NanoKVMGo.Options
+
   # Linux aligns CMA pools to its page blocks: 2^11 pages of 4 KiB.
   @align 8
 
@@ -52,7 +54,8 @@ defmodule NanoKVMGo.CMA do
   """
   @spec sizes(keyword()) :: sizes()
   def sizes(opts \\ []) do
-    dt = device_tree(opts)
+    opts = Options.validate!(opts, [root: "/"], &valid?/2)
+    dt = device_tree(opts[:root])
     pools = reserved_memory(dt)
     video = Enum.find(pools, &File.exists?(Path.join(&1, "linux,cma-default")))
 
@@ -70,7 +73,7 @@ defmodule NanoKVMGo.CMA do
   """
   @spec saved_sizes(keyword()) :: %{video: size(), npu: size()}
   def saved_sizes(opts \\ []) do
-    kv = Keyword.get(opts, :kv, Nerves.Runtime.KV)
+    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
     saved(kv, if(trial_state(kv), do: "_was", else: ""))
   end
 
@@ -79,7 +82,7 @@ defmodule NanoKVMGo.CMA do
   """
   @spec trial(keyword()) :: trial() | nil
   def trial(opts \\ []) do
-    kv = Keyword.get(opts, :kv, Nerves.Runtime.KV)
+    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
 
     case trial_state(kv) do
       nil -> nil
@@ -102,17 +105,18 @@ defmodule NanoKVMGo.CMA do
   @spec put_sizes(%{optional(:video | :npu) => size()} | keyword(), keyword()) ::
           :ok | {:error, term()}
   def put_sizes(sizes, opts \\ []) do
-    kv = Keyword.get(opts, :kv, Nerves.Runtime.KV)
+    opts = Options.validate!(opts, [kv: Nerves.Runtime.KV, root: "/", trial: false], &valid?/2)
+    kv = opts[:kv]
     sizes = Map.new(sizes)
     saved = saved_sizes(kv: kv)
     new = Map.merge(saved, sizes)
-    half = with dram when is_integer(dram) <- dram_mb(device_tree(opts)), do: div(dram, 2)
+    half = with dram when is_integer(dram) <- dram_mb(device_tree(opts[:root])), do: div(dram, 2)
 
     with :ok <- check_pools(sizes),
          :ok <- check_size(:video, new.video, @align, half),
          :ok <- check_size(:npu, new.npu, 0, half),
          :ok <- check_total(new, half) do
-      put(kv, variables(new, saved, Keyword.get(opts, :trial, false)))
+      put(kv, variables(new, saved, opts[:trial]))
     end
   end
 
@@ -125,7 +129,7 @@ defmodule NanoKVMGo.CMA do
   """
   @spec cancel_trial(keyword()) :: :ok | {:error, term()}
   def cancel_trial(opts \\ []) do
-    kv = Keyword.get(opts, :kv, Nerves.Runtime.KV)
+    kv = opts |> Options.validate!([kv: Nerves.Runtime.KV], &valid?/2) |> Keyword.fetch!(:kv)
 
     if trial_state(kv) do
       put(kv, variables(saved(kv, "_was"), nil, false))
@@ -208,7 +212,7 @@ defmodule NanoKVMGo.CMA do
 
   defp check_total(_sizes, _half), do: :ok
 
-  defp device_tree(opts), do: Path.join(Keyword.get(opts, :root, "/"), "proc/device-tree")
+  defp device_tree(root), do: Path.join(root, "proc/device-tree")
 
   defp reserved_memory(dt) do
     dt
@@ -283,4 +287,8 @@ defmodule NanoKVMGo.CMA do
       {:error, _reason} -> []
     end
   end
+
+  defp valid?(:root, root), do: is_binary(root)
+  defp valid?(:kv, kv), do: is_atom(kv)
+  defp valid?(:trial, trial), do: is_boolean(trial)
 end

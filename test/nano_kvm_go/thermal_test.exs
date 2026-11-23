@@ -6,7 +6,7 @@ defmodule NanoKVMGo.ThermalTest do
   @moduletag :tmp_dir
 
   defp zone(root, name, type, temp) do
-    dir = Path.join(root, name)
+    dir = Path.join([root, "sys/class/thermal", name])
     File.mkdir_p!(dir)
     File.write!(Path.join(dir, "type"), type <> "\n")
     if temp, do: File.write!(Path.join(dir, "temp"), temp)
@@ -25,7 +25,7 @@ defmodule NanoKVMGo.ThermalTest do
     zone(tmp_dir, "thermal_zone0", "soc-thermal", "hot\n")
     assert Thermal.temperature(tmp_dir) == {:error, :invalid_temperature}
 
-    File.rm!(Path.join([tmp_dir, "thermal_zone0", "temp"]))
+    File.rm!(Path.join([tmp_dir, "sys/class/thermal/thermal_zone0/temp"]))
     assert Thermal.temperature(tmp_dir) == {:error, :enoent}
   end
 end

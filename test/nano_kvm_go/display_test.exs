@@ -8,7 +8,7 @@ defmodule NanoKVMGo.DisplayTest do
 
   # A framebuffer's sysfs directory and its device, a plain file here.
   defp fake(tmp_dir, width, height, stride) do
-    sysfs = Path.join(tmp_dir, "fb0")
+    sysfs = Path.join(tmp_dir, "sys/class/graphics/fb0")
     dev = Path.join(tmp_dir, "dev")
     File.mkdir_p!(sysfs)
     File.mkdir_p!(dev)
@@ -21,9 +21,7 @@ defmodule NanoKVMGo.DisplayTest do
 
   test "shows pictures and canvases", %{tmp_dir: tmp_dir} do
     {sysfs, dev} = fake(tmp_dir, 4, 2, 8)
-
-    display =
-      start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil})
+    display = start_supervised!({Display, framebuffer: sysfs, root: tmp_dir, name: nil})
 
     assert Display.info(display) == {:ok, %{width: 4, height: 2, stride: 8}}
     assert :ok = Display.show(display, Canvas.new(4, 2, 0xABCD))
@@ -33,7 +31,7 @@ defmodule NanoKVMGo.DisplayTest do
 
   test "keeps the framebuffer it opened for a picture of the wrong size", %{tmp_dir: tmp_dir} do
     {sysfs, dev} = fake(tmp_dir, 2, 1, 4)
-    display = start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil})
+    display = start_supervised!({Display, framebuffer: sysfs, root: tmp_dir, name: nil})
 
     assert Display.show(display, <<0, 0>>) == {:error, {:size, 2, 4}}
     File.rm_rf!(sysfs)
@@ -43,9 +41,7 @@ defmodule NanoKVMGo.DisplayTest do
 
   test "rows go to their place in a padded framebuffer", %{tmp_dir: tmp_dir} do
     {sysfs, dev} = fake(tmp_dir, 2, 2, 8)
-
-    display =
-      start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil})
+    display = start_supervised!({Display, framebuffer: sysfs, root: tmp_dir, name: nil})
 
     assert :ok = Display.show(display, <<1::little-16, 2::little-16, 3::little-16, 4::little-16>>)
 
@@ -55,9 +51,7 @@ defmodule NanoKVMGo.DisplayTest do
 
   test "fills a rectangle, leaving out what falls outside", %{tmp_dir: tmp_dir} do
     {sysfs, dev} = fake(tmp_dir, 3, 3, 8)
-
-    display =
-      start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil})
+    display = start_supervised!({Display, framebuffer: sysfs, root: tmp_dir, name: nil})
 
     assert :ok = Display.show(display, Canvas.new(3, 3, 0))
     assert :ok = Display.fill(display, 1, 1, 5, 5, 0xABCD)
@@ -71,11 +65,14 @@ defmodule NanoKVMGo.DisplayTest do
   test "puts back rows something else drew over, and writes what changed",
        %{tmp_dir: tmp_dir} do
     for stride <- [4, 6] do
-      {sysfs, dev} = fake(Path.join(tmp_dir, "#{stride}"), 2, 3, stride)
+      root = Path.join(tmp_dir, "#{stride}")
+      {sysfs, dev} = fake(root, 2, 3, stride)
       fb = Path.join(dev, "fb0")
       # A framebuffer holds whole strides, padding after the last row too.
       File.write!(fb, :binary.copy(<<0>>, 3 * stride))
-      display = start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil}, id: stride)
+
+      display =
+        start_supervised!({Display, framebuffer: sysfs, root: root, name: nil}, id: stride)
 
       held = fn ->
         for <<line::binary-size(^stride) <- File.read!(fb)>>,
@@ -101,20 +98,16 @@ defmodule NanoKVMGo.DisplayTest do
   end
 
   test "without a framebuffer, errors", %{tmp_dir: tmp_dir} do
-    display =
-      start_supervised!(
-        {Display, graphics: Path.join(tmp_dir, "graphics"), dev: tmp_dir, name: nil}
-      )
-
+    display = start_supervised!({Display, root: tmp_dir, name: nil})
     assert Display.info(display) == {:error, :no_framebuffer}
   end
 
   test "finds the panel's framebuffer once it comes, and again after a write fails",
        %{tmp_dir: tmp_dir} do
-    graphics = Path.join(tmp_dir, "graphics")
+    graphics = Path.join(tmp_dir, "sys/class/graphics")
     dev = Path.join(tmp_dir, "dev")
     File.mkdir_p!(dev)
-    display = start_supervised!({Display, graphics: graphics, dev: dev, name: nil})
+    display = start_supervised!({Display, root: tmp_dir, name: nil})
 
     assert Display.info(display) == {:error, :no_framebuffer}
 

@@ -20,6 +20,13 @@
 * `NanoKVMGo.Touch` and `NanoKVMGo.Button` read their devices with a port
   program, `nano_kvm_go_input`, instead of a read that held one of the VM's
   dirty I/O schedulers each; `:program` names another
+* Options are checked in the caller: an unknown option or a wrong value
+  raises `ArgumentError`, instead of being left out or stopping the process
+* `NanoKVMGo.Display` and `NanoKVMGo.Metrics` take `:root`, the root of the
+  file system they read, as `NanoKVMGo.Hardware` and `NanoKVMGo.CMA` do;
+  the port programs (`:program`), the video devices (`:devices`,
+  `:video_device`), `NanoKVMGo.Expansion`'s GPIO library (`:gpio`) and
+  `NanoKVMGo.Hardware.storage/1`'s `df` (`:df`) are documented options
 
 ## v0.2.1 (2026-11-23)
 

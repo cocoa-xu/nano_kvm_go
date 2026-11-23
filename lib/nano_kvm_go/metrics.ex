@@ -33,9 +33,12 @@ defmodule NanoKVMGo.Metrics do
     * `:name` - the name to register, `NanoKVMGo.Metrics` by default
     * `:interval` - milliseconds between samples, 1000 by default
     * `:history` - how many samples to keep, 300 by default
+    * `:root` - the root of the file system with procfs and sysfs, `"/"` by
+      default
   """
   use GenServer
 
+  alias NanoKVMGo.Options
   alias NanoKVMGo.Thermal
 
   @typedoc "One sample, see the module documentation."
@@ -60,15 +63,25 @@ defmodule NanoKVMGo.Metrics do
         }
 
   @type option() ::
-          {:name, GenServer.name()} | {:interval, pos_integer()} | {:history, pos_integer()}
+          {:name, GenServer.name()}
+          | {:interval, pos_integer()}
+          | {:history, pos_integer()}
+          | {:root, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [name: __MODULE__, interval: 1_000, history: 300, root: "/"],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -97,22 +110,11 @@ defmodule NanoKVMGo.Metrics do
   def unsubscribe(server \\ __MODULE__), do: GenServer.call(server, :unsubscribe)
 
   @impl GenServer
-  def init(opts) do
-    keep = Keyword.get(opts, :history, 300)
-    interval = Keyword.get(opts, :interval, 1_000)
-
-    unless is_integer(keep) and keep > 0,
-      do: raise(ArgumentError, "invalid history: #{inspect(keep)}")
-
-    # nil, for tests: a sample on each :sample message only.
-    unless interval == nil or (is_integer(interval) and interval > 0),
-      do: raise(ArgumentError, "invalid interval: #{inspect(interval)}")
-
+  def init(config) do
     state = %{
-      proc: Keyword.get(opts, :proc, "/proc"),
-      thermal: Keyword.get(opts, :thermal, "/sys/class/thermal"),
-      interval: interval,
-      keep: keep,
+      root: config.root,
+      interval: config.interval,
+      keep: config.history,
       reading: nil,
       current: nil,
       # Newest first.
@@ -120,8 +122,7 @@ defmodule NanoKVMGo.Metrics do
       subscribers: %{}
     }
 
-    send(self(), :sample)
-    {:ok, state}
+    {:ok, sample(state)}
   end
 
   @impl GenServer
@@ -155,23 +156,13 @@ defmodule NanoKVMGo.Metrics do
   end
 
   @impl GenServer
-  def handle_info(:sample, state) do
-    schedule(state.interval)
-    {:noreply, sample(state)}
-  end
+  def handle_info(:sample, state), do: {:noreply, sample(state)}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, drop_subscriber(state, pid)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
-
-  defp schedule(nil), do: :ok
-
-  defp schedule(interval) do
-    _ref = Process.send_after(self(), :sample, interval)
-    :ok
-  end
 
   defp drop_subscriber(state, pid) do
     case Map.pop(state.subscribers, pid) do
@@ -185,7 +176,9 @@ defmodule NanoKVMGo.Metrics do
   end
 
   defp sample(state) do
-    case read(state.proc) do
+    _ref = Process.send_after(self(), :sample, state.interval)
+
+    case read(Path.join(state.root, "proc")) do
       {:ok, reading} -> compare(%{state | reading: reading}, state.reading, reading)
       :error -> state
     end
@@ -227,10 +220,10 @@ defmodule NanoKVMGo.Metrics do
     sample = %{
       cpu: %{total: total, cores: cores},
       memory: %{used: used, total: memory_total, percent: percent(used, memory_total)},
-      temperature: temperature(state.thermal),
+      temperature: temperature(state.root),
       network: network,
-      load: read_load(state.proc),
-      uptime: read_uptime(state.proc)
+      load: read_load(Path.join(state.root, "proc")),
+      uptime: read_uptime(Path.join(state.root, "proc"))
     }
 
     for {pid, _ref} <- state.subscribers, do: send(pid, {__MODULE__, sample})
@@ -322,8 +315,8 @@ defmodule NanoKVMGo.Metrics do
     end
   end
 
-  defp temperature(thermal) do
-    case Thermal.temperature(thermal) do
+  defp temperature(root) do
+    case Thermal.temperature(root) do
       {:ok, celsius} -> celsius
       {:error, _reason} -> nil
     end
@@ -331,4 +324,9 @@ defmodule NanoKVMGo.Metrics do
 
   defp percent(_part, whole) when whole <= 0, do: 0.0
   defp percent(part, whole), do: min(max(part * 100 / whole, 0.0), 100.0)
+
+  defp valid?(:name, _name), do: true
+  defp valid?(:interval, interval), do: is_integer(interval) and interval > 0
+  defp valid?(:history, history), do: is_integer(history) and history > 0
+  defp valid?(:root, root), do: is_binary(root)
 end

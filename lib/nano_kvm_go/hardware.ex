@@ -30,7 +30,16 @@ defmodule NanoKVMGo.Hardware do
   systems are.
 
   The functions read procfs and sysfs, with no process.
+
+  ## Options
+
+    * `:root` - the root of the file system with procfs and sysfs, `"/"` by
+      default
+    * `:df` - for `storage/1`, the `df` program that tells the use of the
+      file systems, `"df"` by default, found in the `PATH`
   """
+
+  alias NanoKVMGo.Options
 
   @typedoc """
   The board: its model and device tree compatibles, the SoC, the CPU cores,
@@ -114,6 +123,10 @@ defmodule NanoKVMGo.Hardware do
 
   @type storage() :: %{card: card() | nil, partitions: [partition()]}
 
+  @type option() :: {:root, Path.t()}
+
+  @type storage_option() :: option() | {:df, String.t()}
+
   @components [
     {:video_bridge, "Video input bridge", "Lontium LT7911EXC",
      {:compatible, "lontium,lt7911exc"}},
@@ -169,9 +182,9 @@ defmodule NanoKVMGo.Hardware do
   @doc """
   The board, its SoC, CPU and memory, and the Linux release.
   """
-  @spec info(keyword()) :: info()
+  @spec info([option()]) :: info()
   def info(opts \\ []) do
-    root = Keyword.get(opts, :root, "/")
+    root = opts |> Options.validate!([root: "/"], &valid?/2) |> Keyword.fetch!(:root)
     compatible = read_strings(root, "proc/device-tree/compatible")
     cpuinfo = read(root, "proc/cpuinfo") || ""
 
@@ -189,9 +202,9 @@ defmodule NanoKVMGo.Hardware do
   @doc """
   The parts of the board, each with its device and driver.
   """
-  @spec components(keyword()) :: [component()]
+  @spec components([option()]) :: [component()]
   def components(opts \\ []) do
-    root = Keyword.get(opts, :root, "/")
+    root = opts |> Options.validate!([root: "/"], &valid?/2) |> Keyword.fetch!(:root)
     devices = devices(root)
 
     for {id, name, chip, finder} <- @components do
@@ -207,17 +220,17 @@ defmodule NanoKVMGo.Hardware do
   @doc """
   The microSD card and its partitions, with the use of the mounted ones.
   """
-  @spec storage(keyword()) :: storage()
+  @spec storage([storage_option()]) :: storage()
   def storage(opts \\ []) do
-    root = Keyword.get(opts, :root, "/")
+    opts = Options.validate!(opts, [root: "/", df: "df"], &valid?/2)
 
-    case card_disk(root) do
+    case card_disk(opts[:root]) do
       nil ->
         %{card: nil, partitions: []}
 
       disk ->
-        mounts = mounts(root)
-        usage = usage(Keyword.get(opts, :df, "df"))
+        mounts = mounts(opts[:root])
+        usage = usage(opts[:df])
         %{card: card(disk), partitions: partitions(disk, mounts, usage)}
     end
   end
@@ -439,4 +452,7 @@ defmodule NanoKVMGo.Hardware do
       {:error, _reason} -> []
     end
   end
+
+  defp valid?(:root, root), do: is_binary(root)
+  defp valid?(:df, df), do: is_binary(df)
 end

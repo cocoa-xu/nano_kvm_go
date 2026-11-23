@@ -17,20 +17,29 @@ defmodule NanoKVMGo.Button do
   require Logger
 
   alias NanoKVMGo.Input
+  alias NanoKVMGo.Options
 
   @retry_delay 2_000
   @ev_key 1
   @key_prog1 148
 
-  @type option() :: {:name, GenServer.name()} | {:device, Path.t()} | {:program, Path.t()}
+  @type option() ::
+          {:name, GenServer.name()} | {:device, Path.t() | nil} | {:program, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [name: __MODULE__, device: nil, program: Input.program()],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -46,10 +55,10 @@ defmodule NanoKVMGo.Button do
   def unsubscribe(server \\ __MODULE__), do: GenServer.call(server, :unsubscribe)
 
   @impl GenServer
-  def init(opts) do
+  def init(config) do
     state = %{
-      device: Keyword.get(opts, :device),
-      program: Keyword.get_lazy(opts, :program, &Input.program/0),
+      device: config.device,
+      program: config.program,
       port: nil,
       reading: nil,
       subscribers: %{}
@@ -117,4 +126,8 @@ defmodule NanoKVMGo.Button do
         %{state | port: Input.open(state.program, device), reading: device}
     end
   end
+
+  defp valid?(:name, _name), do: true
+  defp valid?(:device, device), do: is_binary(device) or is_nil(device)
+  defp valid?(:program, program), do: is_binary(program)
 end

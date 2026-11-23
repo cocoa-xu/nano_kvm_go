@@ -27,23 +27,27 @@ defmodule NanoKVMGo.Display do
     * `:name` - the name to register, `NanoKVMGo.Display` by default
     * `:framebuffer` - the framebuffer's sysfs directory, by default the one
       of the panel's driver (`panel-mipi-dbi`)
+    * `:root` - the root of the file system with sysfs and the device
+      nodes, `"/"` by default
   """
   use GenServer
 
   alias NanoKVMGo.Display.Canvas
+  alias NanoKVMGo.Options
 
   @type info() :: %{width: pos_integer(), height: pos_integer(), stride: pos_integer()}
 
   @type option() ::
-          {:name, GenServer.name()} | {:framebuffer, Path.t()}
+          {:name, GenServer.name()} | {:framebuffer, Path.t() | nil} | {:root, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts = Options.validate!(opts, [name: __MODULE__, framebuffer: nil, root: "/"], &valid?/2)
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -81,18 +85,7 @@ defmodule NanoKVMGo.Display do
   end
 
   @impl GenServer
-  def init(opts) do
-    state = %{
-      framebuffer: Keyword.get(opts, :framebuffer),
-      # For tests: where framebuffers and device nodes are.
-      graphics: Keyword.get(opts, :graphics, "/sys/class/graphics"),
-      dev: Keyword.get(opts, :dev, "/dev"),
-      device: nil,
-      info: nil
-    }
-
-    {:ok, state}
-  end
+  def init(config), do: {:ok, Map.merge(config, %{device: nil, info: nil})}
 
   @impl GenServer
   def handle_call(:info, _from, state) do
@@ -119,10 +112,10 @@ defmodule NanoKVMGo.Display do
   defp open(%{device: device} = state) when device != nil, do: {:ok, state}
 
   defp open(state) do
-    with dir when is_binary(dir) <- state.framebuffer || find_framebuffer(state.graphics),
+    with dir when is_binary(dir) <- state.framebuffer || find_framebuffer(state.root),
          {:ok, info} <- read_info(dir),
-         {:ok, device} <-
-           File.open(Path.join(state.dev, Path.basename(dir)), [:read, :write, :raw, :binary]) do
+         node = Path.join([state.root, "dev", Path.basename(dir)]),
+         {:ok, device} <- File.open(node, [:read, :write, :raw, :binary]) do
       {:ok, %{state | device: device, info: info}}
     else
       nil -> {:error, :no_framebuffer}
@@ -245,7 +238,9 @@ defmodule NanoKVMGo.Display do
   end
 
   # The framebuffer the panel's DRM driver emulates.
-  defp find_framebuffer(graphics) do
+  defp find_framebuffer(root) do
+    graphics = Path.join(root, "sys/class/graphics")
+
     case File.ls(graphics) do
       {:ok, names} ->
         names
@@ -260,4 +255,8 @@ defmodule NanoKVMGo.Display do
         nil
     end
   end
+
+  defp valid?(:name, _name), do: true
+  defp valid?(:framebuffer, framebuffer), do: is_binary(framebuffer) or is_nil(framebuffer)
+  defp valid?(:root, root), do: is_binary(root)
 end

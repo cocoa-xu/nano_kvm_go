@@ -132,6 +132,12 @@ defmodule NanoKVMGo.AudioTest do
     Supervisor.stop(sup)
   end
 
+  test "refuses bad options" do
+    for opts <- [[source: :spdif], [period_ms: 0], [rate: 44_100.0], [sources: :usb]] do
+      assert_raise ArgumentError, fn -> Audio.start_link([name: nil] ++ opts) end
+    end
+  end
+
   test "stops without the port program", %{tmp_dir: tmp_dir} do
     Process.flag(:trap_exit, true)
     missing = Path.join(tmp_dir, "missing")

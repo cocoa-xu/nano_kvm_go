@@ -72,15 +72,16 @@ defmodule NanoKVMGo.VideoTest do
   end
 
   test "refuses bad options" do
-    Process.flag(:trap_exit, true)
-    assert {:error, {%ArgumentError{}, _stack}} = Video.start_link(jpeg_quality: 0, name: nil)
-
-    # A token goes in a URL as it is.
-    assert {:error, {%ArgumentError{}, _stack}} =
-             Video.start_link(mjpeg_token: "short", name: nil)
-
-    assert {:error, {%ArgumentError{}, _stack}} =
-             Video.start_link(mjpeg_token: "has spaces and & in it", name: nil)
+    for opts <- [
+          [jpeg_quality: 0],
+          [jpeg_qualty: 60],
+          [devices: %{capture: "/dev/video0"}],
+          # A token goes in a URL as it is.
+          [mjpeg_token: "short"],
+          [mjpeg_token: "has spaces and & in it"]
+        ] do
+      assert_raise ArgumentError, fn -> Video.start_link([name: nil] ++ opts) end
+    end
   end
 
   test "stops without the port program", %{tmp_dir: tmp_dir} do

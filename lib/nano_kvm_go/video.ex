@@ -18,10 +18,17 @@ defmodule NanoKVMGo.Video do
     * `:name` - the name to register, `NanoKVMGo.Video` by default
     * `:mjpeg_port` - the TCP port of the MJPEG server, 8088 by default
     * `:mjpeg_token` - a token the MJPEG stream asks for,
-      `/stream.mjpg?token=<token>`; without one the stream and a viewer page
-      are open to anyone who reaches the port
+      `/stream.mjpg?token=<token>`: at least 16 of the characters `A-Z`,
+      `a-z`, `0-9`, `-` and `_`, which go in a URL as they are, such as
+      `Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)`.
+      Without one the stream and a viewer page are open to anyone who
+      reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
     * `:h264_qp` - the H.264 quantizer, 0 (best) to 51, 30 by default
+    * `:devices` - the devices to capture and encode with, by default the
+      board's, found by their drivers each time the capture starts
+    * `:program` - the port program, the library's `nano_kvm_go_video` by
+      default
 
   ## Messages
 
@@ -44,6 +51,7 @@ defmodule NanoKVMGo.Video do
   use GenServer
   require Logger
 
+  alias NanoKVMGo.Options
   alias NanoKVMGo.Video.Devices
   alias NanoKVMGo.Video.EDID
   alias NanoKVMGo.Video.Input
@@ -53,12 +61,24 @@ defmodule NanoKVMGo.Video do
   @input_restart_delay 100
   @max_backlog 30
 
+  @typedoc """
+  The video devices: the capture's, the JPEG encoder's and, for H.264, the
+  H.264 encoder's.
+  """
+  @type devices() :: %{
+          required(:capture) => Path.t(),
+          required(:jpeg) => Path.t(),
+          optional(:h264) => Path.t() | nil
+        }
+
   @type option() ::
           {:name, GenServer.name()}
           | {:mjpeg_port, :inet.port_number()}
           | {:mjpeg_token, String.t() | nil}
           | {:jpeg_quality, 1..100}
           | {:h264_qp, 0..51}
+          | {:devices, devices() | nil}
+          | {:program, Path.t()}
 
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
@@ -69,8 +89,23 @@ defmodule NanoKVMGo.Video do
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [
+          name: __MODULE__,
+          mjpeg_port: 8088,
+          mjpeg_token: nil,
+          jpeg_quality: 60,
+          h264_qp: 30,
+          devices: nil,
+          program: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_video")
+        ],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -140,19 +175,7 @@ defmodule NanoKVMGo.Video do
   def set_edid(edid), do: EDID.write(edid_program(), Devices.capture(), edid)
 
   @impl GenServer
-  def init(opts) do
-    config = %{
-      mjpeg_port: Keyword.get(opts, :mjpeg_port, 8088),
-      mjpeg_token: Keyword.get(opts, :mjpeg_token),
-      jpeg_quality: Keyword.get(opts, :jpeg_quality, 60),
-      h264_qp: Keyword.get(opts, :h264_qp, 30),
-      # For tests: another program and other devices than the ones found.
-      program: Keyword.get_lazy(opts, :program, &default_program/0),
-      devices: Keyword.get(opts, :devices)
-    }
-
-    validate!(config)
-
+  def init(config) do
     state = %{
       config: config,
       port: nil,
@@ -386,27 +409,20 @@ defmodule NanoKVMGo.Video do
 
   defp read_counter(_dir, _file), do: nil
 
-  defp default_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_video")
-
   defp edid_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_edid")
 
-  defp validate!(config) do
-    check!(config.mjpeg_port in 1..65_535, :mjpeg_port, config.mjpeg_port)
-    check!(config.jpeg_quality in 1..100, :jpeg_quality, config.jpeg_quality)
+  defp valid?(:name, _name), do: true
+  defp valid?(:mjpeg_port, port), do: port in 1..65_535
+  defp valid?(:mjpeg_token, nil), do: true
+  defp valid?(:mjpeg_token, token), do: is_binary(token) and token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/
+  defp valid?(:jpeg_quality, quality), do: quality in 1..100
+  defp valid?(:h264_qp, qp), do: qp in 0..51
+  defp valid?(:devices, nil), do: true
 
-    check!(
-      is_nil(config.mjpeg_token) or
-        (is_binary(config.mjpeg_token) and config.mjpeg_token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/),
-      :mjpeg_token,
-      config.mjpeg_token
-    )
+  defp valid?(:devices, %{capture: capture, jpeg: jpeg} = devices)
+       when is_binary(capture) and is_binary(jpeg),
+       do: is_binary(devices[:h264]) or is_nil(devices[:h264])
 
-    check!(config.h264_qp in 0..51, :h264_qp, config.h264_qp)
-  end
-
-  defp check!(true, _option, _value), do: :ok
-
-  defp check!(false, option, value) do
-    raise ArgumentError, "invalid #{inspect(option)}: #{inspect(value)}"
-  end
+  defp valid?(:devices, _devices), do: false
+  defp valid?(:program, program), do: is_binary(program)
 end

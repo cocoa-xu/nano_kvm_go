@@ -74,18 +74,18 @@ defmodule NanoKVMGo.CMATest do
   test "keeps sizes for the next boots", %{tmp_dir: tmp_dir} do
     opts = [kv: KV, root: device_tree(tmp_dir)]
 
-    assert CMA.saved_sizes(opts) == %{video: :default, npu: :default}
+    assert CMA.saved_sizes(kv: KV) == %{video: :default, npu: :default}
     assert :ok = CMA.put_sizes(%{video: 160, npu: 96}, opts)
     assert %{"cma_video" => "160", "cma_npu" => "96", "cma_try" => ""} = KV.env()
-    assert CMA.saved_sizes(opts) == %{video: 160, npu: 96}
+    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: 96}
 
     assert :ok = CMA.put_sizes([npu: 0], opts)
-    assert CMA.saved_sizes(opts) == %{video: 160, npu: 0}
+    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: 0}
 
     assert :ok = CMA.put_sizes(%{video: :default}, opts)
     assert %{"cma_video" => "", "cma_npu" => "0"} = KV.env()
-    assert CMA.saved_sizes(opts) == %{video: :default, npu: 0}
-    assert CMA.trial(opts) == nil
+    assert CMA.saved_sizes(kv: KV) == %{video: :default, npu: 0}
+    assert CMA.trial(kv: KV) == nil
   end
 
   test "refuses sizes U-Boot would not take", %{tmp_dir: tmp_dir} do
@@ -119,22 +119,22 @@ defmodule NanoKVMGo.CMATest do
              "cma_try" => "1"
            } = KV.env()
 
-    assert CMA.trial(opts) == %{state: :pending, sizes: %{video: 160, npu: 96}}
-    assert CMA.saved_sizes(opts) == %{video: 160, npu: :default}
+    assert CMA.trial(kv: KV) == %{state: :pending, sizes: %{video: 160, npu: 96}}
+    assert CMA.saved_sizes(kv: KV) == %{video: 160, npu: :default}
 
     # The boot that runs them; another trial still goes back to the same.
     put_env(%{KV.env() | "cma_try" => "2"})
-    assert CMA.trial(opts) == %{state: :running, sizes: %{video: 160, npu: 96}}
+    assert CMA.trial(kv: KV) == %{state: :running, sizes: %{video: 160, npu: 96}}
     assert :ok = CMA.put_sizes(%{video: 200, npu: 56}, [trial: true] ++ opts)
     assert %{"cma_video_was" => "160", "cma_npu_was" => "", "cma_try" => "1"} = KV.env()
 
-    assert :ok = CMA.cancel_trial(opts)
+    assert :ok = CMA.cancel_trial(kv: KV)
 
     assert %{"cma_video" => "160", "cma_npu" => "", "cma_try" => "", "cma_video_was" => ""} =
              KV.env()
 
-    assert CMA.trial(opts) == nil
-    assert :ok = CMA.cancel_trial(opts)
+    assert CMA.trial(kv: KV) == nil
+    assert :ok = CMA.cancel_trial(kv: KV)
   end
 
   test "sizes kept without a trial end one", %{tmp_dir: tmp_dir} do

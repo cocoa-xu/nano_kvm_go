@@ -26,11 +26,14 @@ defmodule NanoKVMGo.Microphone do
       default
     * `:idle_ms` - how long to keep the stream without samples and
       subscribers, 10 s by default
+    * `:program` - the port program, the library's `nano_kvm_go_playback`
+      by default
   """
   use GenServer
   require Logger
 
   alias NanoKVMGo.Audio.Protocol
+  alias NanoKVMGo.Options
 
   @period_ms 20
   @restart_delay 2_000
@@ -39,14 +42,27 @@ defmodule NanoKVMGo.Microphone do
           {:name, GenServer.name()}
           | {:device, String.t()}
           | {:idle_ms, pos_integer()}
+          | {:program, Path.t()}
 
   @doc """
   Starts the process. See the module documentation for the options.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [
+          name: __MODULE__,
+          device: "hw:CARD=UAC2Gadget,DEV=0",
+          idle_ms: 10_000,
+          program: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_playback")
+        ],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -77,18 +93,7 @@ defmodule NanoKVMGo.Microphone do
   def format(server \\ __MODULE__), do: GenServer.call(server, :format)
 
   @impl GenServer
-  def init(opts) do
-    config = %{
-      device: Keyword.get(opts, :device, "hw:CARD=UAC2Gadget,DEV=0"),
-      idle_ms: Keyword.get(opts, :idle_ms, 10_000),
-      # For tests: another program than the one built with the library.
-      program: Keyword.get_lazy(opts, :program, &default_program/0)
-    }
-
-    unless is_integer(config.idle_ms) and config.idle_ms > 0 do
-      raise ArgumentError, "invalid :idle_ms: #{inspect(config.idle_ms)}"
-    end
-
+  def init(config) do
     state = %{
       config: config,
       port: nil,
@@ -236,5 +241,8 @@ defmodule NanoKVMGo.Microphone do
     %{state | restart: nil}
   end
 
-  defp default_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_playback")
+  defp valid?(:name, _name), do: true
+  defp valid?(:device, device), do: is_binary(device)
+  defp valid?(:idle_ms, idle_ms), do: is_integer(idle_ms) and idle_ms > 0
+  defp valid?(:program, program), do: is_binary(program)
 end

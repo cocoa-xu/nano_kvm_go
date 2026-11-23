@@ -33,6 +33,8 @@ defmodule NanoKVMGo.Backlight do
   """
   use GenServer
 
+  alias NanoKVMGo.Options
+
   @type info() :: %{
           on: boolean(),
           brightness: 0..100,
@@ -48,8 +50,15 @@ defmodule NanoKVMGo.Backlight do
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [name: __MODULE__, backlight: "/sys/class/backlight/backlight"],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -107,9 +116,7 @@ defmodule NanoKVMGo.Backlight do
   def info(server \\ __MODULE__), do: GenServer.call(server, :info)
 
   @impl GenServer
-  def init(opts) do
-    {:ok, %{backlight: Keyword.get(opts, :backlight, "/sys/class/backlight/backlight")}}
-  end
+  def init(config), do: {:ok, config}
 
   @impl GenServer
   def handle_call({:power, on}, _from, state) do
@@ -192,4 +199,7 @@ defmodule NanoKVMGo.Backlight do
       :error -> {:error, {:not_a_number, name}}
     end
   end
+
+  defp valid?(:name, _name), do: true
+  defp valid?(:backlight, backlight), do: is_binary(backlight)
 end

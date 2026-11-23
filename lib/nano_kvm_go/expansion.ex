@@ -47,10 +47,13 @@ defmodule NanoKVMGo.Expansion do
     * `:pwm_chip` - the PWM chip's sysfs directory, by default the one of
       the SoC's PWM1 (`6061000.pwm`)
     * `:kv` - where the mode is kept, `Nerves.Runtime.KV` by default
+    * `:gpio` - the GPIO library, `Circuits.GPIO` by default
   """
   use GenServer
 
   require Logger
+
+  alias NanoKVMGo.Options
 
   @type mode() :: :off | :uart | :gpio | :pwm | :pwm_gpio | :gpio_pwm | :i2c
   @type line() :: 0 | 1
@@ -100,8 +103,21 @@ defmodule NanoKVMGo.Expansion do
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    opts =
+      Options.validate!(
+        opts,
+        [
+          :pwm_chip,
+          name: __MODULE__,
+          device: "/sys/devices/platform/expansion",
+          kv: Nerves.Runtime.KV,
+          gpio: Circuits.GPIO
+        ],
+        &valid?/2
+      )
+
+    {name, opts} = Keyword.pop!(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
   @doc """
@@ -172,15 +188,15 @@ defmodule NanoKVMGo.Expansion do
     do: GenServer.call(server, {:stop_pwm, line})
 
   @impl GenServer
-  def init(opts) do
+  def init(config) do
     # For terminate/2 to give the lines back when the supervisor stops it.
     Process.flag(:trap_exit, true)
 
     state = %{
-      device: Keyword.get(opts, :device, "/sys/devices/platform/expansion"),
-      pwm_chip: Keyword.get_lazy(opts, :pwm_chip, &find_pwm_chip/0),
-      kv: Keyword.get(opts, :kv, Nerves.Runtime.KV),
-      gpio: Keyword.get(opts, :gpio, Circuits.GPIO),
+      device: config.device,
+      pwm_chip: Map.get_lazy(config, :pwm_chip, &find_pwm_chip/0),
+      kv: config.kv,
+      gpio: config.gpio,
       gpios: %{},
       pwms: %{},
       subscribers: %{}
@@ -520,4 +536,10 @@ defmodule NanoKVMGo.Expansion do
   end
 
   defp write_file(dir, name, value), do: File.write(Path.join(dir, name), to_string(value))
+
+  defp valid?(:name, _name), do: true
+  defp valid?(:device, device), do: is_binary(device)
+  defp valid?(:pwm_chip, pwm_chip), do: is_binary(pwm_chip)
+  defp valid?(:kv, kv), do: is_atom(kv)
+  defp valid?(:gpio, gpio), do: is_atom(gpio)
 end

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* `NanoKVMGo.Video` and `NanoKVMGo.Microphone` carry on when a keyframe
+  request or samples come as their program exits, instead of crashing
+
 ## v0.2.1 (2026-11-23)
 
 * `NanoKVMGo.USB.gadget_options/1` gives the device controller's endpoints,

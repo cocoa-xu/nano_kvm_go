@@ -124,7 +124,8 @@ defmodule NanoKVMGo.Microphone do
   @impl GenServer
   def handle_cast({:play, pcm}, state) do
     state = ensure_running(state)
-    if state.port, do: Port.command(state.port, pcm)
+    # Unlike Port.command/2, a message never raises once the program has exited.
+    if state.port, do: send(state.port, {self(), {:command, pcm}})
     {:noreply, restart_idle_timer(state)}
   end
 
@@ -224,13 +225,7 @@ defmodule NanoKVMGo.Microphone do
   defp stop(%{port: nil} = state), do: cancel_restart(state)
 
   defp stop(state) do
-    # It may have exited on its own, its exit_status still on the way.
-    try do
-      Port.close(state.port)
-    rescue
-      ArgumentError -> :ok
-    end
-
+    send(state.port, {self(), :close})
     cancel_restart(%{state | port: nil, format: nil})
   end
 

@@ -268,14 +268,9 @@ defmodule NanoKVMGo.Audio do
 
   defp stop(%{port: nil} = state), do: cancel_restart(state)
 
+  # Unlike Port.close/1, a message never raises once the program has exited.
   defp stop(state) do
-    # It may have exited on its own, its exit_status still on the way.
-    try do
-      Port.close(state.port)
-    rescue
-      ArgumentError -> :ok
-    end
-
+    send(state.port, {self(), :close})
     cancel_restart(%{state | port: nil, format: nil})
   end
 

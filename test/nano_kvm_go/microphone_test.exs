@@ -2,25 +2,23 @@ defmodule NanoKVMGo.MicrophoneTest do
   # One fake program at a time, as in NanoKVMGo.AudioTest.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.Microphone
+  alias NanoKVMGo.{FakeProgram, Microphone, Wait}
 
   @moduletag :tmp_dir
 
   # Stands in for nano_kvm_go_playback: reports a format, keeps its arguments
   # and what it is sent.
   defp fake_program(tmp_dir) do
-    program = Path.join(tmp_dir, "fake_playback")
     received = Path.join(tmp_dir, "received")
 
-    File.write!(program, """
-    #!/bin/sh
-    echo "$@" > #{tmp_dir}/args
-    printf '\\000\\000\\000\\020\\002'
-    printf '44100 1 S24_3LE'
-    exec cat > #{received}
-    """)
+    program =
+      FakeProgram.write!(Path.join(tmp_dir, "fake_playback"), """
+      echo "$@" > #{tmp_dir}/args
+      printf '\\000\\000\\000\\020\\002'
+      printf '44100 1 S24_3LE'
+      exec cat > #{received}
+      """)
 
-    File.chmod!(program, 0o755)
     {program, received}
   end
 
@@ -31,7 +29,6 @@ defmodule NanoKVMGo.MicrophoneTest do
     assert %{port: nil} = :sys.get_state(mic)
     :ok = Microphone.play(mic, <<1, 0, 2, 0>>)
     :ok = Microphone.play(mic, <<3, 0>>)
-    kill_on_exit(mic)
 
     assert wait_for(fn ->
              File.read(received) == {:ok, <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>}
@@ -46,7 +43,6 @@ defmodule NanoKVMGo.MicrophoneTest do
 
     assert Microphone.format(mic) == nil
     assert :ok = Microphone.subscribe(mic)
-    kill_on_exit(mic)
 
     format = %{rate: 44_100, channels: 1, sample_format: :s24_3le}
     assert_receive {Microphone, {:format, ^format}}, 1_000
@@ -66,8 +62,24 @@ defmodule NanoKVMGo.MicrophoneTest do
     mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
 
     :ok = Microphone.play(mic, <<0, 0>>)
-    kill_on_exit(mic)
     assert wait_for(fn -> match?(%{port: nil}, :sys.get_state(mic)) end)
+  end
+
+  @tag :capture_log
+  test "takes samples that come as the program exits", %{tmp_dir: tmp_dir} do
+    {program, _received} = fake_program(tmp_dir)
+    mic = start_supervised!({Microphone, program: program, name: nil})
+    :ok = Microphone.play(mic, <<0, 0>>)
+    Wait.until(fn -> FakeProgram.running?(program) end)
+    port = FakeProgram.port(mic)
+
+    :ok = :sys.suspend(mic)
+    :ok = Microphone.play(mic, <<1, 0>>)
+    FakeProgram.kill(program)
+    Wait.until(fn -> Port.info(port) == nil end)
+    :ok = :sys.resume(mic)
+
+    assert Microphone.format(mic) == nil
   end
 
   test "stops without the port program", %{tmp_dir: tmp_dir} do
@@ -84,14 +96,5 @@ defmodule NanoKVMGo.MicrophoneTest do
       tries == 0 -> false
       true -> Process.sleep(20) && wait_for(check, tries - 1)
     end
-  end
-
-  # Whatever happens to its stdin, the program does not outlive the test.
-  defp kill_on_exit(mic) do
-    {:os_pid, os_pid} = Port.info(:sys.get_state(mic).port, :os_pid)
-
-    on_exit(fn ->
-      System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
-    end)
   end
 end

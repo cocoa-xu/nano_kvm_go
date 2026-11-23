@@ -2,7 +2,7 @@ defmodule NanoKVMGo.AudioTest do
   # One fake program at a time, as in NanoKVMGo.VideoTest.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.Audio
+  alias NanoKVMGo.{Audio, FakeProgram, Wait}
   alias NanoKVMGo.Audio.Protocol
 
   @moduletag :tmp_dir
@@ -11,7 +11,6 @@ defmodule NanoKVMGo.AudioTest do
   # video device of the test, sends two periods of PCM, then waits for the
   # end of its stdin.
   @fake """
-  #!/bin/sh
   printf '\\000\\000\\000\\010\\002'
   if [ "$5" = /dev/video7 ]; then printf '44100 2'; else printf '48000 2'; fi
   printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
@@ -19,9 +18,7 @@ defmodule NanoKVMGo.AudioTest do
   """
 
   setup %{tmp_dir: tmp_dir} do
-    program = Path.join(tmp_dir, "fake_audio")
-    File.write!(program, @fake)
-    File.chmod!(program, 0o755)
+    program = FakeProgram.write!(Path.join(tmp_dir, "fake_audio"), @fake)
     audio = start_supervised!({Audio, program: program, video_device: nil, name: nil})
     %{audio: audio, program: program}
   end
@@ -29,7 +26,6 @@ defmodule NanoKVMGo.AudioTest do
   test "captures while there are subscribers", %{audio: audio} do
     assert Audio.format(audio) == nil
     assert :ok = Audio.subscribe(audio)
-    kill_on_exit(audio)
 
     # The first program of a run can take a while to start.
     assert_receive {Audio, :hdmi, {:format, %{rate: 48_000, channels: 2}}}, 1_000
@@ -56,7 +52,6 @@ defmodule NanoKVMGo.AudioTest do
       end)
 
     assert_receive :subscribed
-    kill_on_exit(audio)
 
     ref = Process.monitor(subscriber)
     send(subscriber, :leave)
@@ -73,25 +68,48 @@ defmodule NanoKVMGo.AudioTest do
       )
 
     assert :ok = Audio.subscribe(audio)
-    kill_on_exit(audio)
     assert_receive {Audio, :hdmi, {:format, %{rate: 44_100, channels: 2}}}, 1_000
   end
 
+  @tag :capture_log
+  test "stops a capture whose program exits as the last subscriber leaves",
+       %{tmp_dir: tmp_dir} do
+    program = FakeProgram.write!(Path.join(tmp_dir, "quiet_audio"), "exec cat > /dev/null\n")
+    audio = start_supervised!({Audio, program: program, name: nil}, id: :quiet)
+    test = self()
+
+    subscriber =
+      spawn(fn ->
+        :ok = Audio.subscribe(audio)
+        send(test, :subscribed)
+        receive do: (:leave -> :ok)
+      end)
+
+    assert_receive :subscribed
+    Wait.until(fn -> FakeProgram.running?(program) end)
+    port = FakeProgram.port(audio)
+
+    :ok = :sys.suspend(audio)
+    send(subscriber, :leave)
+    Wait.until(fn -> Process.info(audio, :message_queue_len) == {:message_queue_len, 1} end)
+    FakeProgram.kill(program)
+    Wait.until(fn -> Port.info(port) == nil end)
+    :ok = :sys.resume(audio)
+
+    assert Audio.format(audio) == nil
+  end
+
   test "captures the USB speaker with source: :usb", %{tmp_dir: tmp_dir} do
-    program = Path.join(tmp_dir, "fake_usb_audio")
+    program =
+      FakeProgram.write!(Path.join(tmp_dir, "fake_usb_audio"), """
+      printf '\\000\\000\\000\\010\\002'
+      if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then printf '32000 2'; else printf '48000 2'; fi
+      exec cat > /dev/null
+      """)
 
-    File.write!(program, """
-    #!/bin/sh
-    printf '\\000\\000\\000\\010\\002'
-    if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then printf '32000 2'; else printf '48000 2'; fi
-    exec cat > /dev/null
-    """)
-
-    File.chmod!(program, 0o755)
     audio = start_supervised!({Audio, program: program, source: :usb, name: nil}, id: :usb)
 
     assert :ok = Audio.subscribe(audio)
-    kill_on_exit(audio)
     assert_receive {Audio, :usb, {:format, %{rate: 32_000, channels: 2}}}, 1_000
   end
 
@@ -125,14 +143,5 @@ defmodule NanoKVMGo.AudioTest do
     assert Protocol.decode(<<2, "48000 2 FLOAT_LE">>) == :unknown
     assert Protocol.decode(<<2, "fast">>) == :unknown
     assert Protocol.decode(<<7>>) == :unknown
-  end
-
-  # Whatever happens to its stdin, the program does not outlive the test.
-  defp kill_on_exit(audio) do
-    {:os_pid, os_pid} = Port.info(:sys.get_state(audio).port, :os_pid)
-
-    on_exit(fn ->
-      System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
-    end)
   end
 end

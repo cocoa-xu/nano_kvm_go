@@ -354,8 +354,9 @@ defmodule NanoKVMGo.Video do
   defp command(%{port: nil}, _command), do: :ok
   defp command(%{h264?: false}, _command), do: :ok
 
+  # Unlike Port.command/2, a message never raises once the program has exited.
   defp command(%{port: port}, command) do
-    Port.command(port, Protocol.command(command))
+    send(port, {self(), {:command, Protocol.command(command)}})
     :ok
   end
 

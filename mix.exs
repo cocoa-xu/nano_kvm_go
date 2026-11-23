@@ -18,7 +18,10 @@ defmodule NanoKVMGo.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs(),
-      dialyzer: [flags: [:missing_return, :extra_return, :unmatched_returns, :error_handling]]
+      dialyzer: [
+        plt_add_apps: [:ex_unit],
+        flags: [:missing_return, :extra_return, :unmatched_returns, :error_handling]
+      ]
     ]
   end
 

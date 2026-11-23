@@ -27,6 +27,11 @@ defmodule NanoKVMGo.VideoTest do
   @edid <<0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>> <>
           :binary.copy(<<0>>, 119) <> <<6>>
 
+  # The {:packet, 4} commands a program was sent.
+  defp commands(path) do
+    for <<size::32, command::binary-size(size) <- File.read!(path)>>, do: command
+  end
+
   # A capture of the fake program, once it runs.
   defp start_video(tmp_dir) do
     program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), @fake)
@@ -85,10 +90,57 @@ defmodule NanoKVMGo.VideoTest do
     assert Video.input(video) == %{width: 1920, height: 1080, fps: 60}
   end
 
+  test "encodes as asked, from the start and while it runs", %{tmp_dir: tmp_dir} do
+    commands = Path.join(tmp_dir, "commands")
+
+    program =
+      FakeProgram.write!(Path.join(tmp_dir, "recording_video"), """
+      echo "$KVM_H264_ENCODING" > '#{tmp_dir}/encoding'
+      env printf '\\000\\000\\000\\015\\003'
+      env printf '1920x1080@60'
+      exec cat > '#{commands}'
+      """)
+
+    devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
+    encoding = [rate_control: :cbr, bitrate: 3_000_000]
+
+    video =
+      start_supervised!(
+        {Video, program: program, devices: devices, encoding: encoding, name: nil}
+      )
+
+    Wait.until(fn -> Video.input(video) != nil end)
+
+    assert File.read!(Path.join(tmp_dir, "encoding")) == "cbr 3000000 24 600 0\n"
+
+    assert Video.encoding(video) ==
+             %{rate_control: :cbr, bitrate: 3_000_000, qp: 24, keyframe_interval: 600, max_fps: 0}
+
+    assert %{rate_control: :vbr, bitrate: 3_000_000, max_fps: 30} =
+             Video.set_encoding(video, rate_control: :vbr, max_fps: 30)
+
+    Wait.until(fn -> commands(commands) == ["e vbr 3000000 24 600 30"] end)
+
+    for changes <- [
+          [qp: 52],
+          [rate_control: :abr],
+          [bitrate: 0],
+          [keyframe_interval: 0],
+          [gop: 30]
+        ] do
+      assert_raise ArgumentError, fn -> Video.set_encoding(video, changes) end
+    end
+
+    assert Video.encoding(video).rate_control == :vbr
+  end
+
   test "refuses bad options" do
     for opts <- [
           [jpeg_quality: 0],
           [jpeg_qualty: 60],
+          [h264_qp: 30],
+          [encoding: [qp: 60]],
+          [encoding: %{rate_control: :abr}],
           [devices: %{capture: "/dev/video0"}],
           # A token goes in a URL as it is.
           [mjpeg_token: "short"],

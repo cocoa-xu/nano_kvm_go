@@ -13,9 +13,14 @@
  * With KVM_PORT set (run as an Erlang port), stdout carries {packet, 4}
  * frames [type][payload] (type 0 log line, 1 H.264 access unit, 2 H.264
  * keyframe, 3 input: "<width>x<height>@<fps>", "none" or "unsupported"),
- * stdin takes commands and its end stops the program. With
- * KVM_H264_DEV=<H.264 encoder device> as well (KVM_H264_QP, default 30), the
- * commands are '1' start H.264, '0' stop, 'k' make the next frame an IDR.
+ * stdin takes {packet, 4} commands and its end stops the program. With
+ * KVM_H264_DEV=<H.264 encoder device> as well, the commands are "1" start
+ * H.264, "0" stop, "k" make the next frame an IDR, and
+ * "e <rate control> <bit/s> <QP> <keyframe interval> <max fps>" the
+ * encoding, which KVM_H264_ENCODING gives at the start: rate control "cq"
+ * (a constant QP), "cbr" (a constant bitrate) or "vbr" (the QP, more where
+ * the bitrate would go over); a keyframe interval in frames; a max fps of
+ * 0 for the input's.
  *
  * The program waits for an input it can capture and streams it at its own
  * size; when the input changes it exits with status 3 (EXIT_INPUT_CHANGED),
@@ -42,6 +47,7 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+#include <math.h>
 
 #include "v4l2_h264_enc.h"
 
@@ -363,16 +369,113 @@ static void *acceptor(void *arg)
  * them so whatever the SPS says, and the kernel declares that in the SPS.
  */
 #define NSTRM 2
-#define H264_IDR_EVERY 600
 
 static struct {
 	int fd, media, request;
 	int busy;		/* capture buffer in the encoder, or -1 */
 	int request_busy;
 	int on, force_idr;
-	unsigned int qp, frame_num, poc, idr_pic_id, since_idr;
+	unsigned int frame_num, poc, idr_pic_id, since_idr;
+	double last;		/* when the last frame went in */
 	void *strm[NSTRM];
 } h264 = { .fd = -1, .media = -1, .request = -1, .busy = -1 };
+static unsigned long h264_bytes;	/* sent since the last statistics */
+
+/*
+ * Rate control, frame by frame: a frame takes about complexity / 2^(QP/6)
+ * bits, the complexity followed over the last P frames, and apart over the
+ * last keyframes. A P frame gets its share of the bitrate, less a part of
+ * what the frames before went over, so that dithering, every other frame
+ * large, does not swing the QP, and a still picture saves no bits for later;
+ * a keyframe gets half a second's.
+ */
+enum { RC_CQ, RC_CBR, RC_VBR };
+#define QP_MIN 16
+#define QP_MAX 48
+
+static struct {
+	int mode, qp_floor, qp_ceil;
+	int qp, key_qp;		/* the next P frame's and keyframe's */
+	int used_qp;		/* the frame in the encoder's */
+	unsigned int bitrate, gop, max_fps, fps;
+	double complexity;	/* bits at QP 0 of the recent P frames */
+	double key_complexity;	/* and of the recent keyframes */
+	double debt;		/* bits sent beyond the bitrate */
+} rc = { .mode = RC_CQ, .qp = 30, .key_qp = 30, .qp_floor = 30, .qp_ceil = 30, .gop = 600,
+	 .fps = 30 };
+
+static int clamp_qp(int qp)
+{
+	return qp < rc.qp_floor ? rc.qp_floor : qp > rc.qp_ceil ? rc.qp_ceil : qp;
+}
+
+/* "<cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>"; returns whether it was one. */
+static int rc_set(const char *text)
+{
+	char mode[4];
+	unsigned int bitrate, gop, max_fps;
+	int qp;
+
+	if (sscanf(text, "%3s %u %d %u %u", mode, &bitrate, &qp, &gop, &max_fps) != 5 || qp < 0 ||
+	    qp > 51 || !gop || (strcmp(mode, "cq") && !bitrate))
+		return 0;
+	if (!strcmp(mode, "cq"))
+		rc.mode = RC_CQ;
+	else if (!strcmp(mode, "cbr"))
+		rc.mode = RC_CBR;
+	else if (!strcmp(mode, "vbr"))
+		rc.mode = RC_VBR;
+	else
+		return 0;
+	rc.bitrate = bitrate;
+	rc.qp_floor = rc.mode == RC_CBR ? QP_MIN : qp;
+	rc.qp_ceil = rc.mode == RC_CQ ? qp : QP_MAX;
+	rc.gop = gop;
+	rc.max_fps = max_fps;
+	rc.debt = 0;
+	rc.qp = rc.mode == RC_CBR ? clamp_qp(rc.qp) : qp;
+	rc.key_qp = rc.mode == RC_CBR ? clamp_qp(rc.key_qp) : qp;
+	logline("H.264: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most", mode,
+		bitrate, qp, gop, max_fps);
+	return 1;
+}
+
+/* After each frame, from its size: the next frame's QP. */
+static void rc_frame(size_t bytes, int keyframe)
+{
+	double bits = bytes * 8.0, share = (double)rc.bitrate / rc.fps, budget;
+	int qp;
+
+	if (rc.mode == RC_CQ)
+		return;
+	rc.debt += bits - share;
+	if (rc.debt < -(double)rc.bitrate / 2)
+		rc.debt = -(double)rc.bitrate / 2;
+	if (rc.debt > 2.0 * rc.bitrate)
+		rc.debt = 2.0 * rc.bitrate;
+	if (keyframe) {
+		double c = bits * exp2(rc.used_qp / 6.0);
+
+		rc.key_complexity = rc.key_complexity > 0 ? 0.5 * rc.key_complexity + 0.5 * c : c;
+		rc.key_qp = clamp_qp((int)lround(6 * log2(rc.key_complexity / (rc.bitrate / 2.0))));
+	} else {
+		double c = bits * exp2(rc.used_qp / 6.0);
+
+		rc.complexity = rc.complexity > 0 ? 0.75 * rc.complexity + 0.25 * c : c;
+	}
+	if (rc.complexity <= 0)
+		return;
+	/* The share, paying what went over, a keyframe's mostly, back within a second. */
+	budget = share - rc.debt / rc.fps;
+	if (budget < share / 4)
+		budget = share / 4;
+	qp = (int)lround(6 * log2(rc.complexity / budget));
+	if (qp > rc.qp + 3)
+		qp = rc.qp + 3;
+	if (qp < rc.qp - 3)
+		qp = rc.qp - 3;
+	rc.qp = clamp_qp(qp);
+}
 
 /* Encoders using each capture buffer; it goes back to capture at zero. */
 static int cap_refs[NCAP];
@@ -500,10 +603,12 @@ static void h264_start(unsigned int fps)
 	};
 	struct v4l2_ext_controls cs = { .which = V4L2_CTRL_WHICH_CUR_VAL, .count = 2,
 					.controls = init };
-	const char *qp = getenv("KVM_H264_QP");
+	const char *encoding = getenv("KVM_H264_ENCODING");
 	int i;
 
-	h264.qp = qp ? (unsigned int)atoi(qp) : 30;
+	rc.fps = fps ? fps : 30;
+	if (encoding && !rc_set(encoding))
+		logline("H.264: not an encoding: %s", encoding);
 	parm.parm.output.timeperframe.numerator = 1;
 	parm.parm.output.timeperframe.denominator = fps ? fps : 30;
 	if (xioctl(h264.fd, VIDIOC_S_PARM, &parm))
@@ -512,8 +617,6 @@ static void h264_start(unsigned int fps)
 		die("H.264 SPS/PPS");
 	h264_ctrl(V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 	h264_ctrl(V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE, 0);
-	h264_ctrl(V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, h264.qp);
-	h264_ctrl(V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, h264.qp);
 
 	req.count = NCAP;
 	req.type = out_type;
@@ -543,16 +646,26 @@ static void h264_start(unsigned int fps)
 	if (xioctl(h264.fd, VIDIOC_STREAMON, &out_type) ||
 	    xioctl(h264.fd, VIDIOC_STREAMON, &strm_type))
 		die("STREAMON H.264");
-	logline("H.264: QP %u, %u fps", h264.qp, parm.parm.output.timeperframe.denominator);
+	logline("H.264: %u fps", parm.parm.output.timeperframe.denominator);
 }
 
+/* Whether a frame may go in now, at most max fps. */
+static int h264_due(void)
+{
+	return !rc.max_fps || now() - h264.last >= 0.95 / rc.max_fps;
+}
+
+/* Each frame's QP goes in its request, with its parameters. */
 static void h264_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 {
 	struct v4l2_ctrl_h264_encode_params ep = { 0 };
-	struct v4l2_ext_control c = { .id = V4L2_CID_STATELESS_H264_ENCODE_PARAMS,
-				      .size = sizeof(ep), .ptr = &ep };
+	struct v4l2_ext_control c[] = {
+		{ .id = V4L2_CID_STATELESS_H264_ENCODE_PARAMS, .size = sizeof(ep), .ptr = &ep },
+		{ .id = V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, .value = rc.key_qp },
+		{ .id = V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, .value = rc.qp },
+	};
 	struct v4l2_ext_controls cs = { .which = V4L2_CTRL_WHICH_REQUEST_VAL,
-					.request_fd = h264.request, .count = 1, .controls = &c };
+					.request_fd = h264.request, .count = 3, .controls = c };
 	struct v4l2_plane plane = { .m.fd = dmabuf_fd, .bytesused = cbuf->bytesused,
 				    .length = cbuf->length };
 	struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
@@ -560,7 +673,7 @@ static void h264_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 				   .flags = V4L2_BUF_FLAG_REQUEST_FD,
 				   .request_fd = h264.request, .m.planes = &plane, .length = 1 };
 
-	if (h264.force_idr || h264.since_idr >= H264_IDR_EVERY) {
+	if (h264.force_idr || h264.since_idr >= rc.gop) {
 		h264.force_idr = 0;
 		h264.since_idr = 0;
 		h264.frame_num = 0;
@@ -569,11 +682,13 @@ static void h264_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 		ep.flags = V4L2_H264_ENCODE_FLAG_IDR_PIC;
 		ep.idr_pic_id = h264.idr_pic_id++ & 0xffff;
 		ep.nal_ref_idc = 3;
+		rc.used_qp = rc.key_qp;
 	} else {
 		h264.frame_num = (h264.frame_num + 1) & 0xffff;
 		h264.poc = (h264.poc + 2) & 0xffff;
 		ep.slice_type = V4L2_H264_SLICE_TYPE_P;
 		ep.nal_ref_idc = 2;
+		rc.used_qp = rc.qp;
 	}
 	h264.since_idr++;
 	ep.frame_num = h264.frame_num;
@@ -587,6 +702,7 @@ static void h264_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 		die("queue H.264 request");
 	h264.busy = cbuf->index;
 	h264.request_busy = 1;
+	h264.last = now();
 }
 
 /* Returns whether an access unit was sent. */
@@ -603,9 +719,12 @@ static int h264_send(void)
 		logline("H.264 encode error");
 		h264.force_idr = 1;
 	} else {
+		size_t size = plane.bytesused - plane.data_offset;
+
 		write_packet(buf.flags & V4L2_BUF_FLAG_KEYFRAME ? PKT_KEYFRAME : PKT_FRAME,
-			     (char *)h264.strm[buf.index] + plane.data_offset,
-			     plane.bytesused - plane.data_offset);
+			     (char *)h264.strm[buf.index] + plane.data_offset, size);
+		rc_frame(size, buf.flags & V4L2_BUF_FLAG_KEYFRAME);
+		h264_bytes += size;
 		sent = 1;
 	}
 	if (xioctl(h264.fd, VIDIOC_QBUF, &buf))
@@ -613,23 +732,48 @@ static int h264_send(void)
 	return sent;
 }
 
+/* Kept until the encoder runs: commands can come while waiting for an input. */
+static void h264_command(const char *c, size_t len)
+{
+	char text[96];
+
+	if (len == 1 && c[0] == '1' && !h264.on) {
+		h264.on = 1;
+		h264.force_idr = 1;
+	} else if (len == 1 && c[0] == '0') {
+		h264.on = 0;
+	} else if (len == 1 && c[0] == 'k') {
+		h264.force_idr = 1;
+	} else if (len > 2 && len < sizeof(text) && c[0] == 'e' && c[1] == ' ') {
+		memcpy(text, c + 2, len - 2);
+		text[len - 2] = 0;
+		if (!rc_set(text))
+			logline("H.264: not an encoding: %s", text);
+	}
+}
+
 static void h264_commands(void)
 {
-	char c[16];
-	ssize_t n = read(STDIN_FILENO, c, sizeof(c)), i;
+	static char in[256];
+	static size_t have;
+	ssize_t n = read(STDIN_FILENO, in + have, sizeof(in) - have);
+	uint32_t len;
 
 	if (n == 0)
 		exit(0);	/* the port is gone */
-	/* Kept until the encoder runs: commands can come while waiting for an input. */
-	for (i = 0; i < n; i++) {
-		if (c[i] == '1' && !h264.on) {
-			h264.on = 1;
-			h264.force_idr = 1;
-		} else if (c[i] == '0') {
-			h264.on = 0;
-		} else if (c[i] == 'k') {
-			h264.force_idr = 1;
-		}
+	if (n < 0)
+		return;
+	have += (size_t)n;
+	while (have >= 4) {
+		memcpy(&len, in, 4);
+		len = ntohl(len);
+		if (len > sizeof(in) - 4)
+			die("a command too long");
+		if (have < 4 + len)
+			break;
+		h264_command(in + 4, len);
+		memmove(in, in + 4 + len, have - 4 - len);
+		have -= 4 + len;
 	}
 }
 
@@ -1006,7 +1150,8 @@ int main(int argc, char **argv)
 					tq = now();
 					refs++;
 				}
-				if (h264.on && h264.fd >= 0 && h264.busy < 0 && !h264.request_busy) {
+				if (h264.on && h264.fd >= 0 && h264.busy < 0 && !h264.request_busy &&
+				    h264_due()) {
 					h264_queue(&buf, dmabuf[buf.index]);
 					refs++;
 				}
@@ -1019,11 +1164,12 @@ int main(int argc, char **argv)
 		if (now() - tstat >= 5) {
 			double dt = now() - tstat;
 
-			logline("capture %.1f fps, jpeg %.1f fps, sent %.1f fps, %.0f KB avg, encode+wait %.1f ms, clients %d, h264 %.1f fps",
+			logline("capture %.1f fps, jpeg %.1f fps, sent %.1f fps, %.0f KB avg, encode+wait %.1f ms, clients %d, h264 %.1f fps %.2f Mbit/s QP %d",
 			       ncap / dt, nstat_enc / dt, __atomic_exchange_n(&nsent, 0, __ATOMIC_RELAXED) / dt,
 			       nstat_enc ? bytes / 1024.0 / nstat_enc : 0,
-			       nstat_enc ? lat_sum * 1000 / nstat_enc : 0, nclients, nstat_h264 / dt);
-			ncap = nstat_enc = bytes = nstat_h264 = 0;
+			       nstat_enc ? lat_sum * 1000 / nstat_enc : 0, nclients, nstat_h264 / dt,
+			       h264_bytes * 8 / dt / 1e6, rc.qp);
+			ncap = nstat_enc = bytes = nstat_h264 = h264_bytes = 0;
 			lat_sum = 0;
 			tstat = now();
 		}

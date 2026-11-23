@@ -1,9 +1,8 @@
 defmodule NanoKVMGo.Video.Protocol do
   @moduledoc false
   # The nano_kvm_go_video port program's side of the port: {:packet, 4} frames
-  # of one type byte and a payload on its stdout, one-byte commands on its
-  # stdin (framed too: the program only looks for the command bytes). The
-  # end of its stdin stops it.
+  # of one type byte and a payload on its stdout, {:packet, 4} commands on
+  # its stdin. The end of its stdin stops it.
 
   @type packet() ::
           {:log, String.t()}
@@ -27,10 +26,23 @@ defmodule NanoKVMGo.Video.Protocol do
 
   def decode(_packet), do: :unknown
 
-  @spec command(:h264_start | :h264_stop | :keyframe) :: String.t()
+  @spec command(:h264_start | :h264_stop | :keyframe | {:encoding, NanoKVMGo.Video.encoding()}) ::
+          String.t()
   def command(:h264_start), do: "1"
   def command(:h264_stop), do: "0"
   def command(:keyframe), do: "k"
+  def command({:encoding, encoding}), do: "e " <> encoding(encoding)
+
+  # "<cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>"
+  @spec encoding(NanoKVMGo.Video.encoding()) :: String.t()
+  def encoding(encoding) do
+    rate_control = Map.fetch!(%{constant_qp: "cq", cbr: "cbr", vbr: "vbr"}, encoding.rate_control)
+
+    Enum.join(
+      [rate_control, encoding.bitrate, encoding.qp, encoding.keyframe_interval, encoding.max_fps],
+      " "
+    )
+  end
 
   @spec input_changed?(non_neg_integer()) :: boolean()
   def input_changed?(status), do: status == @exit_input_changed

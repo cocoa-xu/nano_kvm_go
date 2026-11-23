@@ -24,7 +24,8 @@ defmodule NanoKVMGo.Video do
       Without one the stream and a viewer page are open to anyone who
       reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
-    * `:h264_qp` - the H.264 quantizer, 0 (best) to 51, 30 by default
+    * `:encoding` - how H.264 is encoded, see `t:encoding/0`: VBR of up to
+      8 Mbit/s at QP 24, a keyframe every 600 frames, by default
     * `:devices` - the devices to capture and encode with, see
       `t:devices/0`, by default the board's, found by their drivers each
       time the capture starts
@@ -58,6 +59,13 @@ defmodule NanoKVMGo.Video do
   alias NanoKVMGo.Video.Protocol
 
   @restart_delay 2_000
+  @default_encoding %{
+    rate_control: :vbr,
+    bitrate: 8_000_000,
+    qp: 24,
+    keyframe_interval: 600,
+    max_fps: 0
+  }
   @input_restart_delay 100
   @max_backlog 30
 
@@ -81,12 +89,36 @@ defmodule NanoKVMGo.Video do
           optional(:h264) => Path.t() | nil
         }
 
+  @typedoc """
+  How H.264 is encoded:
+
+    * `:rate_control` - `:constant_qp`, every frame at `:qp`; `:cbr`, at a
+      constant `:bitrate`; `:vbr`, at `:qp` unless the bitrate would go over
+      `:bitrate`, then at the QP that keeps it
+    * `:bitrate` - bits a second: what CBR keeps to, the most VBR takes
+    * `:qp` - the quantizer, 0 (the best picture) to 51: constant QP's, the
+      best VBR goes to
+    * `:keyframe_interval` - frames from a keyframe to the next, unless one
+      is asked for sooner
+    * `:max_fps` - frames a second at most, 0 for as many as the input has
+
+  The bitrate a still picture takes is low whatever the rate control: CBR
+  and VBR save no bits for later.
+  """
+  @type encoding() :: %{
+          rate_control: :constant_qp | :cbr | :vbr,
+          bitrate: pos_integer(),
+          qp: 0..51,
+          keyframe_interval: pos_integer(),
+          max_fps: non_neg_integer()
+        }
+
   @type option() ::
           {:name, GenServer.name()}
           | {:mjpeg_port, :inet.port_number()}
           | {:mjpeg_token, String.t() | nil}
           | {:jpeg_quality, 1..100}
-          | {:h264_qp, 0..51}
+          | {:encoding, keyword() | map()}
           | {:devices, devices() | nil}
           | {:program, Path.t()}
 
@@ -109,7 +141,7 @@ defmodule NanoKVMGo.Video do
           mjpeg_port: 8088,
           mjpeg_token: nil,
           jpeg_quality: 60,
-          h264_qp: 30,
+          encoding: [],
           devices: nil,
           program: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_video")
         ],
@@ -117,7 +149,27 @@ defmodule NanoKVMGo.Video do
       )
 
     {name, opts} = Keyword.pop!(opts, :name)
-    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
+    {encoding, opts} = Keyword.pop!(opts, :encoding)
+    config = opts |> Map.new() |> Map.put(:encoding, encoding!(@default_encoding, encoding))
+    GenServer.start_link(__MODULE__, config, name: name)
+  end
+
+  @doc """
+  How H.264 is encoded, see `t:encoding/0`.
+  """
+  @spec encoding(GenServer.server()) :: encoding()
+  def encoding(server \\ __MODULE__), do: GenServer.call(server, :encoding)
+
+  @doc """
+  Changes how H.264 is encoded, from the next frame: the keys given, see
+  `t:encoding/0`. Returns the encoding, and raises `ArgumentError` for one
+  it does not take.
+
+      NanoKVMGo.Video.set_encoding(rate_control: :cbr, bitrate: 3_000_000)
+  """
+  @spec set_encoding(GenServer.server(), keyword() | map()) :: encoding()
+  def set_encoding(server \\ __MODULE__, changes) do
+    GenServer.call(server, {:set_encoding, encoding!(%{}, changes)})
   end
 
   @doc """
@@ -262,6 +314,14 @@ defmodule NanoKVMGo.Video do
   end
 
   def handle_call(:input, _from, state), do: {:reply, state.input, state}
+
+  def handle_call(:encoding, _from, state), do: {:reply, state.config.encoding, state}
+
+  def handle_call({:set_encoding, changes}, _from, state) do
+    state = update_in(state.config.encoding, &Map.merge(&1, changes))
+    :ok = command(state, {:encoding, state.config.encoding})
+    {:reply, state.config.encoding, state}
+  end
 
   @impl GenServer
   def handle_cast(:keyframe, state), do: {:noreply, ask_keyframe(state)}
@@ -408,7 +468,7 @@ defmodule NanoKVMGo.Video do
       if devices.h264,
         do: [
           {~c"KVM_H264_DEV", String.to_charlist(devices.h264)},
-          {~c"KVM_H264_QP", ~c"#{config.h264_qp}"}
+          {~c"KVM_H264_ENCODING", String.to_charlist(Protocol.encoding(config.encoding))}
         ],
         else: []
 
@@ -452,6 +512,22 @@ defmodule NanoKVMGo.Video do
 
   defp edid_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_edid")
 
+  defp encoding!(encoding, changes) do
+    changes
+    |> Enum.to_list()
+    |> Options.validate!(Map.keys(@default_encoding), &valid_encoding?/2)
+    |> Map.new()
+    |> then(&Map.merge(encoding, &1))
+  end
+
+  defp valid_encoding?(:rate_control, rate_control),
+    do: rate_control in [:constant_qp, :cbr, :vbr]
+
+  defp valid_encoding?(:bitrate, bitrate), do: bitrate in 1..1_000_000_000
+  defp valid_encoding?(:qp, qp), do: qp in 0..51
+  defp valid_encoding?(:keyframe_interval, frames), do: frames in 1..65_535
+  defp valid_encoding?(:max_fps, fps), do: fps in 0..1_000
+
   defp capture_device(opts) do
     case Keyword.get_lazy(opts, :device, &Devices.capture/0) do
       nil -> {:error, :no_device}
@@ -475,7 +551,7 @@ defmodule NanoKVMGo.Video do
   defp valid?(:mjpeg_token, nil), do: true
   defp valid?(:mjpeg_token, token), do: is_binary(token) and token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/
   defp valid?(:jpeg_quality, quality), do: quality in 1..100
-  defp valid?(:h264_qp, qp), do: qp in 0..51
+  defp valid?(:encoding, encoding), do: is_list(encoding) or is_map(encoding)
   defp valid?(:devices, nil), do: true
 
   defp valid?(:devices, %{capture: capture, jpeg: jpeg} = devices)

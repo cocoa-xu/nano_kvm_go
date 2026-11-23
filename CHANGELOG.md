@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* H.264 rate control in `NanoKVMGo.Video`: the `:encoding` option, and
+  `set_encoding/2`, which changes it while the capture runs. A constant QP,
+  a constant bitrate, or VBR: a QP, with a higher one where the bitrate
+  would go over a cap; a keyframe interval, and a frame rate cap. VBR of up
+  to 8 Mbit/s at QP 24 by default, instead of a constant QP of 30; the
+  `:h264_qp` option is gone
 * Needs Elixir 1.20, the version it is tested with
 * `NanoKVMGo.Video` and `NanoKVMGo.Microphone` carry on when a keyframe
   request or samples come as their program exits, instead of crashing

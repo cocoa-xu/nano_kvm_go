@@ -32,7 +32,7 @@ endif
 
 $(PREFIX)/nano_kvm_go_video: $(BUILD)/nano_kvm_go_video.o
 	@mkdir -p $(PREFIX)
-	$(CC) $(LDFLAGS) -o $@ $^ -lpthread
+	$(CC) $(LDFLAGS) -o $@ $^ -lpthread -lm
 
 $(PREFIX)/nano_kvm_go_edid: $(BUILD)/nano_kvm_go_edid.o
 	@mkdir -p $(PREFIX)

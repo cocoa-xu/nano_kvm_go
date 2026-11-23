@@ -103,10 +103,8 @@ defmodule NanoKVMGo.Display do
   end
 
   def handle_call({:show, pixels}, _from, state) do
-    with {:ok, state} <- open(state),
-         :ok <- check_size(pixels, state.info) do
-      written(show_changes(state.device, pixels, state.info), state)
-    else
+    case open(state) do
+      {:ok, state} -> show_pixels(state, pixels)
       error -> {:reply, error, state}
     end
   end
@@ -159,10 +157,14 @@ defmodule NanoKVMGo.Display do
     end
   end
 
-  defp check_size(pixels, info) do
-    if byte_size(pixels) == info.width * info.height * 2,
-      do: :ok,
-      else: {:error, {:size, byte_size(pixels), info.width * info.height * 2}}
+  defp show_pixels(%{info: info} = state, pixels) do
+    case info.width * info.height * 2 do
+      size when byte_size(pixels) == size ->
+        written(show_changes(state.device, pixels, info), state)
+
+      size ->
+        {:reply, {:error, {:size, byte_size(pixels), size}}, state}
+    end
   end
 
   # Writes the rows from the first to the last that differ from what the

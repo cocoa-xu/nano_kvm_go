@@ -31,6 +31,16 @@ defmodule NanoKVMGo.DisplayTest do
     assert {:error, {:size, 2, 16}} = Display.show(display, <<0, 0>>)
   end
 
+  test "keeps the framebuffer it opened for a picture of the wrong size", %{tmp_dir: tmp_dir} do
+    {sysfs, dev} = fake(tmp_dir, 2, 1, 4)
+    display = start_supervised!({Display, framebuffer: sysfs, dev: dev, name: nil})
+
+    assert Display.show(display, <<0, 0>>) == {:error, {:size, 2, 4}}
+    File.rm_rf!(sysfs)
+    assert :ok = Display.show(display, <<1::little-16, 2::little-16>>)
+    assert File.read!(Path.join(dev, "fb0")) == <<1::little-16, 2::little-16>>
+  end
+
   test "rows go to their place in a padded framebuffer", %{tmp_dir: tmp_dir} do
     {sysfs, dev} = fake(tmp_dir, 2, 2, 8)
 

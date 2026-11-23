@@ -229,11 +229,14 @@ defmodule NanoKVMGo.Expansion do
   end
 
   def handle_call({:set_mode, mode, persist}, _from, state) do
-    with {:ok, modes} <- read_modes(state),
-         :ok <- if(mode in modes, do: :ok, else: {:error, {:unknown_mode, mode}}) do
-      change_mode(release(state), mode, persist)
-    else
-      error -> {:reply, error, state}
+    case read_modes(state) do
+      {:ok, modes} ->
+        if mode in modes,
+          do: change_mode(release(state), mode, persist),
+          else: {:reply, {:error, {:unknown_mode, mode}}, state}
+
+      error ->
+        {:reply, error, state}
     end
   end
 
@@ -247,8 +250,7 @@ defmodule NanoKVMGo.Expansion do
   def handle_call({:write, line, value}, _from, state) do
     case open_gpio(state, line, {:output, value}) do
       {:ok, state} ->
-        {:reply, state.gpio.write(state.gpios[line].handle, value),
-         put_in(state.gpios[line].value, value)}
+        {:reply, state.gpio.write(state.gpios[line].handle, value), state}
 
       error ->
         {:reply, error, state}
@@ -330,20 +332,13 @@ defmodule NanoKVMGo.Expansion do
 
   # After release/1: the subscribers watch the mode there is afterwards.
   defp change_mode(state, mode, persist) do
-    with :ok <- write_mode(state, mode),
-         :ok <- if(persist, do: persist_mode(state, mode), else: :ok) do
-      {:reply, :ok, watch(state, mode)}
-    else
+    case write_mode(state, mode) do
+      :ok -> {:reply, if(persist, do: persist_mode(state, mode), else: :ok), watch(state, mode)}
       error -> {:reply, error, watch(state, current_mode(state))}
     end
   end
 
-  defp write_mode(state, mode) do
-    case write_file(state.device, "mode", from_mode(mode)) do
-      {:error, :ebusy} -> {:error, :busy}
-      other -> other
-    end
-  end
+  defp write_mode(state, mode), do: write_file(state.device, "mode", from_mode(mode))
 
   defp to_mode(name), do: Map.get(@modes, name, :off)
   defp from_mode(mode), do: mode |> Atom.to_string() |> String.replace("_", "-")
@@ -362,10 +357,17 @@ defmodule NanoKVMGo.Expansion do
   end
 
   defp restore_mode(state) do
-    with {:ok, kept} <- persisted_mode(state),
-         {:ok, mode} when mode != kept <- read_mode(state),
-         {:error, reason} <- write_mode(state, kept) do
-      Logger.warning("Expansion lines not set to #{inspect(kept)}: #{inspect(reason)}")
+    with {:ok, persisted} <- persisted_mode(state),
+         {:ok, mode} when mode != persisted <- read_mode(state) do
+      case write_mode(state, persisted) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "nano_kvm_go: expansion lines not set to #{inspect(persisted)}: #{inspect(reason)}"
+          )
+      end
     else
       _ -> :ok
     end
@@ -430,14 +432,14 @@ defmodule NanoKVMGo.Expansion do
   defp open_new_gpio(state, line, direction) do
     name = elem(@gpio_names, line)
 
-    {circuits_direction, opts, value} =
+    {circuits_direction, opts} =
       case direction do
-        :input -> {:input, [], nil}
-        {:output, value} -> {:output, [initial_value: value], value}
+        :input -> {:input, []}
+        {:output, value} -> {:output, [initial_value: value]}
       end
 
     with {:ok, handle} <- state.gpio.open(name, circuits_direction, opts) do
-      gpio = %{handle: handle, direction: circuits_direction, value: value, edges: false}
+      gpio = %{handle: handle, direction: circuits_direction, edges: false}
       {:ok, edges(put_in(state.gpios[line], gpio), line)}
     end
   end
@@ -463,14 +465,19 @@ defmodule NanoKVMGo.Expansion do
 
   defp watch_line(state, mode, line) do
     case {role(mode, line), state.gpios[line]} do
-      {:gpio, nil} -> state |> open_gpio(line, :input) |> opened(state)
-      {:gpio, %{direction: :input}} -> edges(state, line)
-      _other -> state
+      {:gpio, nil} ->
+        case open_gpio(state, line, :input) do
+          {:ok, opened} -> opened
+          {:error, _reason} -> state
+        end
+
+      {:gpio, %{direction: :input}} ->
+        edges(state, line)
+
+      _other ->
+        state
     end
   end
-
-  defp opened({:ok, state}, _state), do: state
-  defp opened({:error, _reason}, state), do: state
 
   # PWM channels through the chip's sysfs directory.
 
@@ -479,15 +486,12 @@ defmodule NanoKVMGo.Expansion do
   defp export_pwm(state, line) do
     dir = Path.join(state.pwm_chip, "pwm#{line}")
 
-    cond do
-      File.dir?(dir) -> {:ok, dir}
-      (result = write_file(state.pwm_chip, "export", line)) != :ok -> busy(result)
-      true -> {:ok, dir}
+    if File.dir?(dir) do
+      {:ok, dir}
+    else
+      with :ok <- write_file(state.pwm_chip, "export", line), do: {:ok, dir}
     end
   end
-
-  defp busy({:error, :ebusy}), do: {:error, :busy}
-  defp busy(other), do: other
 
   # The kernel refuses a duty cycle longer than the period: shorten first.
   defp write_pwm(dir, %{duty_cycle: old_duty}, period, duty_cycle) when old_duty > period do
@@ -510,12 +514,16 @@ defmodule NanoKVMGo.Expansion do
   defp unexport_pwm(state, line) do
     dir = Path.join(state.pwm_chip, "pwm#{line}")
 
-    with true <- File.dir?(dir),
-         :ok <- write_file(dir, "enable", 0),
-         {:error, reason} <- write_file(state.pwm_chip, "unexport", line) do
-      Logger.warning("PWM line #{line} not given back: #{inspect(reason)}")
+    if File.dir?(dir) do
+      with :ok <- write_file(dir, "enable", 0),
+           :ok <- write_file(state.pwm_chip, "unexport", line) do
+        :ok
+      else
+        {:error, reason} ->
+          Logger.warning("nano_kvm_go: PWM line #{line} not given back: #{inspect(reason)}")
+      end
     else
-      _ -> :ok
+      :ok
     end
   end
 
@@ -534,7 +542,12 @@ defmodule NanoKVMGo.Expansion do
     Enum.reduce(Map.keys(state.pwms), %{state | gpios: %{}}, &stop_pwm_channel(&2, &1))
   end
 
-  defp write_file(dir, name, value), do: File.write(Path.join(dir, name), to_string(value))
+  defp write_file(dir, name, value) do
+    case File.write(Path.join(dir, name), to_string(value)) do
+      {:error, :ebusy} -> {:error, :busy}
+      result -> result
+    end
+  end
 
   defp valid?(:name, _name), do: true
   defp valid?(:device, device), do: is_binary(device)

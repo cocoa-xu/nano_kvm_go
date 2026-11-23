@@ -74,6 +74,9 @@ defmodule NanoKVMGo.Expansion do
           i2c: String.t()
         }
 
+  @typedoc "A message to subscribers, see the module documentation."
+  @type message() :: {NanoKVMGo.Expansion, {:edge, line(), 0 | 1, integer()}}
+
   @type option() ::
           {:name, GenServer.name()}
           | {:device, Path.t()}

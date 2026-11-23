@@ -62,6 +62,9 @@ defmodule NanoKVMGo.Metrics do
           network: %{String.t() => %{down: [float()], up: [float()]}}
         }
 
+  @typedoc "A message to subscribers: each sample."
+  @type message() :: {NanoKVMGo.Metrics, sample()}
+
   @type option() ::
           {:name, GenServer.name()}
           | {:interval, pos_integer()}

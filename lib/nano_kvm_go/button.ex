@@ -23,6 +23,9 @@ defmodule NanoKVMGo.Button do
   @ev_key 1
   @key_prog1 148
 
+  @typedoc "A message to subscribers, see the module documentation."
+  @type message() :: {NanoKVMGo.Button, :down | :up}
+
   @type option() ::
           {:name, GenServer.name()} | {:device, Path.t() | nil} | {:program, Path.t()}
 

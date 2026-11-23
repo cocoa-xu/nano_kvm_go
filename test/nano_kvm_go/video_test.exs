@@ -52,6 +52,16 @@ defmodule NanoKVMGo.VideoTest do
     refute_receive {Video, _event}, 100
   end
 
+  test "tells a subscriber the input once it is known", %{tmp_dir: tmp_dir} do
+    program = FakeProgram.write!(Path.join(tmp_dir, "quiet_video"), "exec cat > /dev/null\n")
+    devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
+    video = start_supervised!({Video, program: program, devices: devices, name: nil})
+    Wait.until(fn -> FakeProgram.running?(program) end)
+
+    assert :ok = Video.subscribe(video)
+    refute_receive {Video, _message}, 100
+  end
+
   test "streams to a subscriber on another node", %{tmp_dir: tmp_dir} do
     {video, _program} = start_video(tmp_dir)
     subscriber = Peer.spawn_caller(video, :subscribe)

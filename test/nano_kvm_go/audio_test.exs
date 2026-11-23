@@ -28,9 +28,9 @@ defmodule NanoKVMGo.AudioTest do
     assert :ok = Audio.subscribe(audio)
 
     # The first program of a run can take a while to start.
-    assert_receive {Audio, :hdmi, {:format, %{rate: 48_000, channels: 2}}}, 1_000
-    assert_receive {Audio, :hdmi, {:pcm, "ABCD"}}
-    assert_receive {Audio, :hdmi, {:pcm, "EFGH"}}
+    assert_receive {Audio, {:format, :hdmi, %{rate: 48_000, channels: 2}}}, 1_000
+    assert_receive {Audio, {:pcm, :hdmi, "ABCD"}}
+    assert_receive {Audio, {:pcm, :hdmi, "EFGH"}}
     assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
 
     assert :ok = Audio.unsubscribe(audio)
@@ -76,7 +76,7 @@ defmodule NanoKVMGo.AudioTest do
       )
 
     assert :ok = Audio.subscribe(audio)
-    assert_receive {Audio, :hdmi, {:format, %{rate: 44_100, channels: 2}}}, 1_000
+    assert_receive {Audio, {:format, :hdmi, %{rate: 44_100, channels: 2}}}, 1_000
   end
 
   @tag :capture_log
@@ -118,7 +118,7 @@ defmodule NanoKVMGo.AudioTest do
     audio = start_supervised!({Audio, program: program, source: :usb, name: nil}, id: :usb)
 
     assert :ok = Audio.subscribe(audio)
-    assert_receive {Audio, :usb, {:format, %{rate: 32_000, channels: 2}}}, 1_000
+    assert_receive {Audio, {:format, :usb, %{rate: 32_000, channels: 2}}}, 1_000
   end
 
   test "processes for both sources fit in one supervisor", %{program: program} do

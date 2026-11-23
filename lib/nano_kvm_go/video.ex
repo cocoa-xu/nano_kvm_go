@@ -35,7 +35,7 @@ defmodule NanoKVMGo.Video do
   Subscribers receive:
 
     * `{NanoKVMGo.Video, {:input, input}}` when subscribing and when the input
-      changes, see `t:input/0`
+      changes, once the capture knows it, see `t:input/0`
     * `{NanoKVMGo.Video, {:h264, :key | :delta, data}}`, one access unit each,
       starting with a keyframe. The SPS and PPS come before every keyframe.
 
@@ -246,7 +246,7 @@ defmodule NanoKVMGo.Video do
         %{state | subscribers: Map.put(state.subscribers, pid, subscriber), key_requested?: true}
       end
 
-    send(pid, {__MODULE__, {:input, state.input}})
+    if state.input, do: send(pid, {__MODULE__, {:input, state.input}})
     {:reply, :ok, state}
   end
 

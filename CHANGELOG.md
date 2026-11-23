@@ -43,8 +43,14 @@
 * `NanoKVMGo.Video.edid/1` and `NanoKVMGo.Video.set_edid/2` take the
   `:device` and the `:program` as options, and tell a failure of the EDID
   program as `{:error, {:exit_status, status, output}}` instead of a string
-* `NanoKVMGo.Video.input/0` is the input's type, `t:NanoKVMGo.Video.input/0`,
-  instead of `t:NanoKVMGo.Video.Input.t/0`
+* The input's type is `t:NanoKVMGo.Video.input/0`, instead of
+  `t:NanoKVMGo.Video.Input.t/0`
+* `NanoKVMGo.Audio`'s messages are `{NanoKVMGo.Audio, {:format, source,
+  format}}` and `{NanoKVMGo.Audio, {:pcm, source, data}}`, a module and an
+  event as the other processes send, instead of `{NanoKVMGo.Audio, source,
+  event}`; each process that sends messages has their type, `message()`
+* `NanoKVMGo.Video` tells a subscriber the input once it knows it, instead
+  of `{NanoKVMGo.Video, {:input, nil}}`
 
 ## v0.2.1 (2026-11-23)
 

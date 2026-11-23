@@ -92,12 +92,12 @@ next connects.
 :ok = NanoKVMGo.Audio.subscribe()
 
 receive do
-  {NanoKVMGo.Audio, :hdmi, {:pcm, samples}} -> samples
+  {NanoKVMGo.Audio, {:pcm, :hdmi, samples}} -> samples
 end
 ```
 
 Samples are interleaved signed 16-bit little endian stereo, at the rate in
-the latest `{NanoKVMGo.Audio, source, {:format, format}}` message, and only
+the latest `{NanoKVMGo.Audio, {:format, source, format}}` message, and only
 come while the source sends audio. The source, `:hdmi` or `:usb`, tells the
 two captures apart.
 

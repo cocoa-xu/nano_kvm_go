@@ -34,7 +34,7 @@ defmodule NanoKVMGo.Audio do
   Subscribers receive, with the `:source` of the process, so that one
   subscriber can take both sources apart:
 
-    * `{NanoKVMGo.Audio, source, {:format, format}}`, such as `%{rate: 48000,
+    * `{NanoKVMGo.Audio, {:format, source, format}}`, such as `%{rate: 48000,
       channels: 2, sample_format: :s16_le}`, when the capture starts, when
       subscribing to a running one, and when the source switches to another
       rate. The bridge passes the source's rate on and reports it to the
@@ -42,7 +42,7 @@ defmodule NanoKVMGo.Audio do
       does not report it, the program measures the rate the samples arrive
       at and snaps it to a standard one (44.1 kHz, 48 kHz, ...) within a few
       seconds. The USB speaker reports the rate the target chooses.
-    * `{NanoKVMGo.Audio, source, {:pcm, data}}`, `:period_ms` of samples each
+    * `{NanoKVMGo.Audio, {:pcm, source, data}}`, `:period_ms` of samples each
 
   No samples come while the source sends no audio. A subscriber with more
   than a second of audio waiting misses the next until it catches up; one
@@ -70,7 +70,8 @@ defmodule NanoKVMGo.Audio do
   @type source() :: :hdmi | :usb
 
   @typedoc "A message to subscribers, see the module documentation."
-  @type message() :: {NanoKVMGo.Audio, source(), {:format, format()} | {:pcm, binary()}}
+  @type message() ::
+          {NanoKVMGo.Audio, {:format, source(), format()} | {:pcm, source(), binary()}}
 
   @type option() ::
           {:name, GenServer.name()}
@@ -156,7 +157,7 @@ defmodule NanoKVMGo.Audio do
     if Map.has_key?(state.subscribers, pid) do
       {:reply, :ok, state}
     else
-      if state.format, do: send(pid, {__MODULE__, state.config.source, {:format, state.format}})
+      if state.format, do: send(pid, {__MODULE__, {:format, state.config.source, state.format}})
       subscribers = Map.put(state.subscribers, pid, Process.monitor(pid))
       {:reply, :ok, ensure_running(%{state | subscribers: subscribers})}
     end
@@ -200,7 +201,7 @@ defmodule NanoKVMGo.Audio do
   defp handle_packet({:pcm, pcm}, state) do
     Enum.each(state.subscribers, fn {pid, _monitor} ->
       if backlog(pid) * state.config.period_ms < 1000,
-        do: send(pid, {__MODULE__, state.config.source, {:pcm, pcm}})
+        do: send(pid, {__MODULE__, {:pcm, state.config.source, pcm}})
     end)
 
     state
@@ -208,7 +209,7 @@ defmodule NanoKVMGo.Audio do
 
   defp handle_packet({:format, format}, state) do
     Enum.each(state.subscribers, fn {pid, _monitor} ->
-      send(pid, {__MODULE__, state.config.source, {:format, format}})
+      send(pid, {__MODULE__, {:format, state.config.source, format}})
     end)
 
     %{state | format: format}

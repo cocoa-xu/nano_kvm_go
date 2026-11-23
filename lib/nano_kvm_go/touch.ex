@@ -36,7 +36,9 @@ defmodule NanoKVMGo.Touch do
   @abs_x 0
   @abs_y 1
 
-  @type event() :: {:down | :move | :up, non_neg_integer(), non_neg_integer()}
+  @typedoc "A message to subscribers, see the module documentation."
+  @type message() ::
+          {NanoKVMGo.Touch, {:down | :move | :up, non_neg_integer(), non_neg_integer()}}
 
   @type option() ::
           {:name, GenServer.name()} | {:device, Path.t() | nil} | {:program, Path.t()}

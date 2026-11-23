@@ -38,6 +38,9 @@ defmodule NanoKVMGo.Microphone do
   @period_ms 20
   @restart_delay 2_000
 
+  @typedoc "A message to subscribers, see the module documentation."
+  @type message() :: {NanoKVMGo.Microphone, {:format, NanoKVMGo.Audio.format()}}
+
   @type option() ::
           {:name, GenServer.name()}
           | {:device, String.t()}

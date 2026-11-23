@@ -122,22 +122,18 @@ defmodule NanoKVMGo.DisplayTest do
 
     assert Display.info(display) == {:error, :no_framebuffer}
 
+    # The panel's driver loads, but its device fails the writes (a FIFO here
+    # takes none)...
     framebuffer(graphics, dev, "fb0", "simple")
     framebuffer(graphics, dev, "fb1", "panel-mipi-dbid")
-    assert :ok = Display.show(display, <<1::little-16, 2::little-16>>)
-    assert File.read!(Path.join(dev, "fb1")) == <<1::little-16, 2::little-16>>
+    File.rm!(Path.join(dev, "fb1"))
+    {_, 0} = System.cmd("mkfifo", [Path.join(dev, "fb1")])
+    assert {:error, _reason} = Display.show(display, <<1::little-16, 2::little-16>>)
 
-    # The panel's driver probes again: the device open fails its writes, and
-    # the framebuffer comes back under another number.
-    :sys.replace_state(display, fn state ->
-      :ok = File.close(state.device)
-      state
-    end)
-
+    # ...then it probes again, and the framebuffer comes back under another
+    # number.
     File.rm_rf!(Path.join(graphics, "fb1"))
     framebuffer(graphics, dev, "fb2", "panel-mipi-dbid")
-
-    assert {:error, _reason} = Display.fill(display, 0, 0, 1, 1, 0xFFFF)
     assert :ok = Display.show(display, <<3::little-16, 4::little-16>>)
     assert File.read!(Path.join(dev, "fb2")) == <<3::little-16, 4::little-16>>
   end

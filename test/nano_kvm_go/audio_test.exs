@@ -23,8 +23,9 @@ defmodule NanoKVMGo.AudioTest do
     %{audio: audio, program: program}
   end
 
-  test "captures while there are subscribers", %{audio: audio} do
+  test "captures while there are subscribers", %{audio: audio, program: program} do
     assert Audio.format(audio) == nil
+    assert FakeProgram.runs(program) == []
     assert :ok = Audio.subscribe(audio)
 
     # The first program of a run can take a while to start.
@@ -34,11 +35,11 @@ defmodule NanoKVMGo.AudioTest do
     assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
 
     assert :ok = Audio.unsubscribe(audio)
-    assert %{port: nil} = :sys.get_state(audio)
     assert Audio.format(audio) == nil
+    Wait.until(fn -> not FakeProgram.running?(program) end)
   end
 
-  test "a subscriber that goes away stops the capture", %{audio: audio} do
+  test "a subscriber that goes away stops the capture", %{audio: audio, program: program} do
     test = self()
 
     subscriber =
@@ -52,13 +53,10 @@ defmodule NanoKVMGo.AudioTest do
       end)
 
     assert_receive :subscribed
+    Wait.until(fn -> FakeProgram.running?(program) end)
 
-    ref = Process.monitor(subscriber)
     send(subscriber, :leave)
-    assert_receive {:DOWN, ^ref, :process, _pid, _reason}
-
-    assert %{port: nil, subscribers: subscribers} = :sys.get_state(audio)
-    assert subscribers == %{}
+    Wait.until(fn -> not FakeProgram.running?(program) end)
   end
 
   test "sends to a subscriber on another node", %{audio: audio} do

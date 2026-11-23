@@ -26,13 +26,13 @@ defmodule NanoKVMGo.MicrophoneTest do
     {program, received} = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, name: nil})
 
-    assert %{port: nil} = :sys.get_state(mic)
+    assert FakeProgram.runs(program) == []
     :ok = Microphone.play(mic, <<1, 0, 2, 0>>)
     :ok = Microphone.play(mic, <<3, 0>>)
 
-    assert wait_for(fn ->
-             File.read(received) == {:ok, <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>}
-           end)
+    Wait.until(fn ->
+      File.read(received) == {:ok, <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>}
+    end)
 
     assert File.read!(Path.join(tmp_dir, "args")) == "hw:CARD=UAC2Gadget,DEV=0 20\n"
   end
@@ -50,11 +50,10 @@ defmodule NanoKVMGo.MicrophoneTest do
 
     # Subscribers keep the stream past the idle time.
     Process.sleep(200)
-    assert %{port: port} = :sys.get_state(mic)
-    assert port
+    assert FakeProgram.running?(program)
 
     assert :ok = Microphone.unsubscribe(mic)
-    assert %{port: nil} = :sys.get_state(mic)
+    Wait.until(fn -> not FakeProgram.running?(program) end)
   end
 
   test "stops the program after a while without samples", %{tmp_dir: tmp_dir} do
@@ -62,7 +61,7 @@ defmodule NanoKVMGo.MicrophoneTest do
     mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
 
     :ok = Microphone.play(mic, <<0, 0>>)
-    assert wait_for(fn -> match?(%{port: nil}, :sys.get_state(mic)) end)
+    Wait.until(fn -> FakeProgram.runs(program) != [] and not FakeProgram.running?(program) end)
   end
 
   @tag :capture_log
@@ -88,13 +87,5 @@ defmodule NanoKVMGo.MicrophoneTest do
 
     assert {:error, {:missing_program, ^missing}} =
              Microphone.start_link(program: missing, name: nil)
-  end
-
-  defp wait_for(check, tries \\ 50) do
-    cond do
-      check.() -> true
-      tries == 0 -> false
-      true -> Process.sleep(20) && wait_for(check, tries - 1)
-    end
   end
 end

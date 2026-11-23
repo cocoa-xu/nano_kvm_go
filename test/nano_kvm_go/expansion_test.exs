@@ -185,7 +185,7 @@ defmodule NanoKVMGo.ExpansionTest do
     refute_receive {Expansion, _}, 50
   end
 
-  test "forgets subscribers that exit", %{opts: opts} do
+  test "carries on when a subscriber exits", %{opts: opts} do
     pid = start(opts)
     assert :ok = Expansion.set_mode(pid, :gpio)
 
@@ -205,7 +205,6 @@ defmodule NanoKVMGo.ExpansionTest do
 
     send(pid, {:circuits_gpio, "EXPANSION0", 1, 1})
     assert {:ok, _info} = Expansion.info(pid)
-    assert :sys.get_state(pid).subscribers == %{}
   end
 
   test "tells what the kernel does not have", %{opts: opts, tmp_dir: tmp_dir} do

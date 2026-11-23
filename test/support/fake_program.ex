@@ -14,26 +14,28 @@ defmodule NanoKVMGo.FakeProgram do
     program
   end
 
+  # The PIDs of the runs so far.
+  @spec runs(Path.t()) :: [String.t()]
+  def runs(program) do
+    case File.read(program <> ".pids") do
+      {:ok, pids} -> String.split(pids)
+      {:error, :enoent} -> []
+    end
+  end
+
   @spec running?(Path.t()) :: boolean()
   def running?(program) do
-    Enum.any?(pids(program), &match?({_output, 0}, signal(&1, "-0")))
+    Enum.any?(runs(program), &match?({_output, 0}, signal(&1, "-0")))
   end
 
   @spec kill(Path.t()) :: :ok
-  def kill(program), do: Enum.each(pids(program), &signal(&1, "-9"))
+  def kill(program), do: Enum.each(runs(program), &signal(&1, "-9"))
 
   # The port a process runs its program in.
   @spec port(pid()) :: port() | nil
   def port(pid) do
     {:links, links} = Process.info(pid, :links)
     Enum.find(links, &is_port/1)
-  end
-
-  defp pids(program) do
-    case File.read(program <> ".pids") do
-      {:ok, pids} -> String.split(pids)
-      {:error, :enoent} -> []
-    end
   end
 
   defp signal(pid, signal), do: System.cmd("kill", [signal, pid], stderr_to_stdout: true)

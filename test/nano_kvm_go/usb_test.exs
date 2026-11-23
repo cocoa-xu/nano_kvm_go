@@ -10,6 +10,7 @@ defmodule NanoKVMGo.USBTest do
     opts = USB.gadget_options(serial_number: "0123456789abcdef")
 
     assert opts[:gadget] == "/sys/kernel/config/usb_gadget/nanokvm"
+    assert opts[:endpoints] == %{in: 7, out: 7}
     assert opts[:max_packet] == %{microphone: 832, speaker: 682}
     assert opts[:names][:storage] == {"NanoKVM", "Virtual Media", "0100"}
     assert opts[:network][:function] == "ncm.usb0"

@@ -49,7 +49,8 @@ defmodule NanoKVMGo.USB do
 
   @doc """
   The options of the gadget on this board, for `Kuroneko.Gadget`: `:gadget`,
-  `:max_packet`, `:names` and `:network`.
+  `:endpoints`, `:max_packet`, `:names` and `:network`. The AX620E's DWC3 has
+  eight IN and eight OUT endpoints, seven of each besides endpoint 0.
 
   ## Options
 
@@ -65,6 +66,7 @@ defmodule NanoKVMGo.USB do
 
     [
       gadget: @gadget,
+      endpoints: %{in: 7, out: 7},
       max_packet: %{microphone: 832, speaker: 682},
       names: [
         audio: "NanoKVM-Go Audio",

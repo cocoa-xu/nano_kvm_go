@@ -131,6 +131,18 @@ defmodule NanoKVMGo.ExpansionTest do
     assert {:ok, %{lines: [%{pwm: nil}, %{pwm: nil}]}} = Expansion.info(pid)
   end
 
+  test "gives the lines back when it stops", %{opts: opts, chip: chip} do
+    pid = start(opts)
+    assert :ok = Expansion.set_mode(pid, :pwm_gpio)
+    assert :ok = Expansion.set_pwm(pid, 0, 20_000_000, 1_500_000)
+    assert {:ok, 1} = Expansion.read(pid, 1)
+
+    assert :ok = stop_supervised(Expansion)
+    assert File.read!(Path.join([chip, "pwm0", "enable"])) == "0"
+    assert File.read!(Path.join(chip, "unexport")) == "0"
+    assert_received {FakeGPIO, {:close, "EXPANSION1"}}
+  end
+
   test "reads, drives and watches GPIO lines", %{opts: opts} do
     pid = start(opts)
 

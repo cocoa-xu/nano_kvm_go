@@ -173,6 +173,9 @@ defmodule NanoKVMGo.Expansion do
 
   @impl GenServer
   def init(opts) do
+    # For terminate/2 to give the lines back when the supervisor stops it.
+    Process.flag(:trap_exit, true)
+
     state = %{
       device: Keyword.get(opts, :device, "/sys/devices/platform/expansion"),
       pwm_chip: Keyword.get_lazy(opts, :pwm_chip, &find_pwm_chip/0),

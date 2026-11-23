@@ -10,6 +10,8 @@
   nodes, instead of crashing on their first message
 * `NanoKVMGo.Expansion` leaves a kept mode the kernel does not offer,
   instead of writing the mode `nil`
+* `NanoKVMGo.Expansion` gives its GPIOs and PWM channels back when its
+  supervisor stops it, stopping the PWM outputs
 
 ## v0.2.1 (2026-11-23)
 

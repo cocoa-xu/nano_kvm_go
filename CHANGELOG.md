@@ -31,6 +31,12 @@
   `:backlight` option instead of a server: take it out of the supervision
   tree. `set_frequency/2` raises for a frequency without a period of whole
   nanoseconds, instead of returning `{:error, :invalid_frequency}`
+* `NanoKVMGo.Expansion.set_mode/3` takes the server first, as the other
+  functions do: `set_mode(mode)`, `set_mode(server, mode)` or
+  `set_mode(server, mode, persist: false)`, no longer `set_mode(mode,
+  persist: false)`. A mode that is none of the modes raises
+  `FunctionClauseError`, instead of returning `{:error, {:unknown_mode,
+  mode}}`, which now means one the kernel does not offer
 
 ## v0.2.1 (2026-11-23)
 

@@ -62,16 +62,19 @@ defmodule NanoKVMGo.ExpansionTest do
     assert_received {FakeKV, %{"nanokvm_expansion" => ""}}
   end
 
-  test "takes a mode with options, without a server", %{opts: opts, device: device} do
+  test "takes a mode alone, or the server, a mode and options", %{opts: opts, device: device} do
     start(Keyword.put(opts, :name, Expansion))
 
-    assert :ok = Expansion.set_mode(:uart, persist: false)
+    assert :ok = Expansion.set_mode(:uart)
     assert mode(device) == "uart"
+    assert_received {FakeKV, %{"nanokvm_expansion" => "uart"}}
+
+    assert :ok = Expansion.set_mode(Expansion, :gpio, persist: false)
+    assert mode(device) == "gpio"
     refute_received {FakeKV, _}
 
-    assert :ok = Expansion.set_mode(Expansion, :gpio)
-    assert mode(device) == "gpio"
-    assert_received {FakeKV, %{"nanokvm_expansion" => "gpio"}}
+    assert_raise FunctionClauseError, fn -> Expansion.set_mode(:uart, persist: false) end
+    assert_raise ArgumentError, fn -> Expansion.set_mode(Expansion, :uart, persist: :no) end
   end
 
   test "refuses modes the kernel does not offer", %{opts: opts, device: device} do
@@ -79,7 +82,7 @@ defmodule NanoKVMGo.ExpansionTest do
     pid = start(opts)
 
     assert Expansion.set_mode(pid, :i2c) == {:error, {:unknown_mode, :i2c}}
-    assert Expansion.set_mode(pid, :sideways) == {:error, {:unknown_mode, :sideways}}
+    assert_raise FunctionClauseError, fn -> Expansion.set_mode(pid, :sideways) end
     assert mode(device) == "off\n"
   end
 

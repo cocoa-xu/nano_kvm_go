@@ -91,7 +91,8 @@ defmodule NanoKVMGo.Expansion do
     i2c: {:i2c_sda, :i2c_scl}
   }
 
-  @modes Map.new(Map.keys(@roles), &{&1 |> Atom.to_string() |> String.replace("_", "-"), &1})
+  @known_modes Map.keys(@roles)
+  @modes Map.new(@known_modes, &{&1 |> Atom.to_string() |> String.replace("_", "-"), &1})
   @lines [0, 1]
   @gpio_names {"EXPANSION0", "EXPANSION1"}
   @variable "nanokvm_expansion"
@@ -130,17 +131,15 @@ defmodule NanoKVMGo.Expansion do
 
   @doc """
   Sets the mode, kept for the next boots unless `persist: false`:
-  `set_mode(:uart)`, `set_mode(:uart, persist: false)` or
-  `set_mode(server, :uart, persist: false)`.
+  `set_mode(:uart)`, `set_mode(server, :uart)` or
+  `set_mode(server, :uart, persist: false)`. A mode the kernel does not
+  offer gives `{:error, {:unknown_mode, mode}}`.
   """
   @spec set_mode(GenServer.server(), mode(), [{:persist, boolean()}]) :: :ok | {:error, term()}
-  def set_mode(server \\ __MODULE__, mode, opts \\ [])
-
-  def set_mode(mode, opts, []) when is_atom(mode) and is_list(opts),
-    do: set_mode(__MODULE__, mode, opts)
-
-  def set_mode(server, mode, opts) when is_atom(mode) and is_list(opts),
-    do: GenServer.call(server, {:set_mode, mode, Keyword.get(opts, :persist, true)})
+  def set_mode(server \\ __MODULE__, mode, opts \\ []) when mode in @known_modes do
+    opts = Options.validate!(opts, [persist: true], &valid?/2)
+    GenServer.call(server, {:set_mode, mode, opts[:persist]})
+  end
 
   @doc """
   Reads a GPIO line, making it an input.
@@ -542,4 +541,5 @@ defmodule NanoKVMGo.Expansion do
   defp valid?(:pwm_chip, pwm_chip), do: is_binary(pwm_chip)
   defp valid?(:kv, kv), do: is_atom(kv)
   defp valid?(:gpio, gpio), do: is_atom(gpio)
+  defp valid?(:persist, persist), do: is_boolean(persist)
 end

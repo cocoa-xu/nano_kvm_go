@@ -2,14 +2,17 @@ defmodule NanoKVMGo.MixProject do
   use Mix.Project
 
   @version "0.2.1"
+  @source_url "https://github.com/cocoa-xu/nano_kvm_go"
 
   def project do
     [
       app: :nano_kvm_go,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.20",
       description: description(),
       package: package(),
+      source_url: @source_url,
+      homepage_url: @source_url,
       compilers: [:elixir_make | Mix.compilers()],
       make_targets: ["all"],
       make_clean: ["clean"],
@@ -30,7 +33,15 @@ defmodule NanoKVMGo.MixProject do
   end
 
   def cli do
-    [preferred_envs: [docs: :docs, "hex.build": :docs, dialyzer: :test, credo: :test]]
+    [
+      preferred_envs: [
+        docs: :docs,
+        "hex.build": :docs,
+        "hex.publish": :docs,
+        dialyzer: :test,
+        credo: :test
+      ]
+    ]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -44,7 +55,8 @@ defmodule NanoKVMGo.MixProject do
 
   defp package do
     [
-      licenses: ["Apache-2.0"],
+      licenses: ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"],
+      links: %{"GitHub" => @source_url},
       files: [
         "lib",
         "c_src/*.[ch]",

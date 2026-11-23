@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 defmodule NanoKVMGo.Display.Font do
   @moduledoc false
   # Printable ASCII of Spleen 8x16 (2.1.0), 16 bytes a character, a row a

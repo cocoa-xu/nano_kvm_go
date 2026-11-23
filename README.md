@@ -268,5 +268,7 @@ functions of `Kuroneko.Gadget` fit together.
 
 ## License
 
-Apache-2.0, see [LICENSE](LICENSE). `c_src/v4l2_h264_enc.h` is the proposed
-V4L2 H.264 stateless encode uAPI under its own license.
+Apache-2.0, see [LICENSE](LICENSE), but for two files under their own
+licenses: the font, `lib/nano_kvm_go/display/font.ex`, BSD-2-Clause, and
+`c_src/v4l2_h264_enc.h`, the proposed V4L2 H.264 stateless encode uAPI,
+GPL-2.0+ WITH Linux-syscall-note or BSD-3-Clause.

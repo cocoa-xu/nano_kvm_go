@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* Needs Elixir 1.20, the version it is tested with
 * `NanoKVMGo.Video` and `NanoKVMGo.Microphone` carry on when a keyframe
   request or samples come as their program exits, instead of crashing
 * `NanoKVMGo.Display.show/2` keeps the framebuffer open after a picture of

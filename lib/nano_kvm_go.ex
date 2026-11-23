@@ -27,8 +27,9 @@ defmodule NanoKVMGo do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  The input's EDID, the SoC temperature and the hardware need no process:
-  `NanoKVMGo.Video.edid/0`, `temperature/0` and `NanoKVMGo.Hardware`.
+  The input's EDID, the backlight, the SoC temperature and the hardware need
+  no process: `NanoKVMGo.Video.edid/0`, `NanoKVMGo.Backlight`,
+  `temperature/0` and `NanoKVMGo.Hardware`.
   """
 
   @doc """

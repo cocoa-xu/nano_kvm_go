@@ -27,6 +27,10 @@
   the port programs (`:program`), the video devices (`:devices`,
   `:video_device`), `NanoKVMGo.Expansion`'s GPIO library (`:gpio`) and
   `NanoKVMGo.Hardware.storage/1`'s `df` (`:df`) are documented options
+* `NanoKVMGo.Backlight` is functions with no process, each with the
+  `:backlight` option instead of a server: take it out of the supervision
+  tree. `set_frequency/2` raises for a frequency without a period of whole
+  nanoseconds, instead of returning `{:error, :invalid_frequency}`
 
 ## v0.2.1 (2026-11-23)
 

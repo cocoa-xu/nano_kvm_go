@@ -145,7 +145,7 @@ The keyboard, the mice and the mass storage are in `kuroneko_gadget` too:
 ```elixir
 alias NanoKVMGo.Display.Canvas
 
-children = [NanoKVMGo.Display, NanoKVMGo.Backlight, NanoKVMGo.Touch, NanoKVMGo.Button]
+children = [NanoKVMGo.Display, NanoKVMGo.Touch, NanoKVMGo.Button]
 
 Canvas.new(240, 284, Canvas.rgb(0, 0, 0))
 |> Canvas.rect(0, 0, 240, 40, Canvas.rgb(0, 80, 160))

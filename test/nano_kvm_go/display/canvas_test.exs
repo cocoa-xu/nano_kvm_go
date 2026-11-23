@@ -45,6 +45,15 @@ defmodule NanoKVMGo.Display.CanvasTest do
     assert pixel(turned, 3, 0, 0) == 0
   end
 
+  test "text is as wide as the characters drawn" do
+    # An e and a combining acute accent: one grapheme, two code points.
+    string = "e\u0301"
+    assert Canvas.text_width(string) == 16
+
+    assert Canvas.new(16, 16) |> Canvas.text(0, 0, string, @white) |> Canvas.render() ==
+             Canvas.new(16, 16) |> Canvas.text(0, 0, "e?", @white) |> Canvas.render()
+  end
+
   test "characters past ASCII show as ?" do
     a = Canvas.new(8, 16) |> Canvas.text(0, 0, "é", @white) |> Canvas.render()
     b = Canvas.new(8, 16) |> Canvas.text(0, 0, "?", @white) |> Canvas.render()

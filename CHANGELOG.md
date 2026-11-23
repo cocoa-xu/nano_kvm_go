@@ -14,6 +14,8 @@
   supervisor stops it, stopping the PWM outputs
 * `NanoKVMGo.EDID.decode/1` skips a detailed timing without a size, instead
   of raising `ArithmeticError`
+* `NanoKVMGo.Display.Canvas.text_width/2` counts code points, as
+  `NanoKVMGo.Display.Canvas.text/6` draws them, not graphemes
 
 ## v0.2.1 (2026-11-23)
 

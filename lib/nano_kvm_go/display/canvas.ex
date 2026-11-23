@@ -72,14 +72,15 @@ defmodule NanoKVMGo.Display.Canvas do
   end
 
   @doc """
-  The width of text in pixels.
+  The width of text in pixels, a character each Unicode code point, as
+  `text/6` draws it.
 
       iex> NanoKVMGo.Display.Canvas.text_width("NanoKVM", 2)
       112
   """
   @spec text_width(String.t(), pos_integer()) :: non_neg_integer()
   def text_width(string, scale \\ 1) when is_integer(scale) and scale > 0,
-    do: String.length(string) * Font.width() * scale
+    do: length(String.to_charlist(string)) * Font.width() * scale
 
   @doc """
   The picture as rows of little-endian RGB565 pixels, top to bottom, as a

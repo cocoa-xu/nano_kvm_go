@@ -48,7 +48,8 @@ defmodule NanoKVMGo.MicrophoneTest do
     assert_receive {Microphone, {:format, ^format}}, 1_000
     assert Microphone.format(mic) == format
 
-    # Subscribers keep the stream past the idle time.
+    # Subscribers keep the stream past the idle time of samples.
+    :ok = Microphone.play(mic, <<0, 0, 0>>)
     Process.sleep(200)
     assert FakeProgram.running?(program)
 

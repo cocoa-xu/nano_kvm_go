@@ -3,7 +3,8 @@ defmodule NanoKVMGo do
   The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system.
 
     * `NanoKVMGo.Video` - capture of the HDMI/DisplayPort input, with the
-      hardware H.264 and JPEG encoders
+      hardware H.264 and JPEG encoders, and the EDID it presents, which
+      `NanoKVMGo.EDID` decodes
     * `NanoKVMGo.Audio` - the audio of the HDMI/DisplayPort input, or of the
       USB speaker, as PCM
     * `NanoKVMGo.Microphone` - sound for the target's USB microphone
@@ -15,6 +16,8 @@ defmodule NanoKVMGo do
     * `NanoKVMGo.Expansion` - the two lines of the auxiliary USB-C port
     * `NanoKVMGo.Hardware` - the board, its parts and drivers, its storage
     * `NanoKVMGo.Metrics` - CPU, memory, temperature and network each second
+    * `NanoKVMGo.CMA` - the memory pools of video and the NPU, for the next
+      boots
 
   The processes take their options when started; add them to your
   supervision tree, the USB gadget first:
@@ -27,9 +30,10 @@ defmodule NanoKVMGo do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  The input's EDID, the backlight, the SoC temperature and the hardware need
-  no process: `NanoKVMGo.Video.edid/1`, `NanoKVMGo.Backlight`,
-  `temperature/0` and `NanoKVMGo.Hardware`.
+  The input's EDID, the backlight, the SoC temperature, the hardware and the
+  memory pools need no process: `NanoKVMGo.Video.edid/1`,
+  `NanoKVMGo.Backlight`, `temperature/0`, `NanoKVMGo.Hardware` and
+  `NanoKVMGo.CMA`.
   """
 
   @doc """

@@ -9,7 +9,7 @@
   the wrong size, instead of opening it again for each
 * `NanoKVMGo.Video` and `NanoKVMGo.Audio` send to subscribers on other
   nodes, instead of crashing on their first message
-* `NanoKVMGo.Expansion` leaves a kept mode the kernel does not offer,
+* `NanoKVMGo.Expansion` leaves a persisted mode the kernel does not offer,
   instead of writing the mode `nil`
 * `NanoKVMGo.Expansion` gives its GPIOs and PWM channels back when its
   supervisor stops it, stopping the PWM outputs
@@ -68,6 +68,8 @@
   check their options: a `:scale` that is not a positive integer, a
   `:rotate` other than 0 and 180, or an unknown option raise
   `ArgumentError`
+* `NanoKVMGo.Display` tells a framebuffer attribute it cannot read as
+  `{:error, {:invalid_attribute, name, value}}`, instead of raising
 
 ## v0.2.1 (2026-11-23)
 

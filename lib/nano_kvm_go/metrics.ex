@@ -125,7 +125,7 @@ defmodule NanoKVMGo.Metrics do
       subscribers: %{}
     }
 
-    {:ok, sample(state)}
+    {:ok, take_sample(state)}
   end
 
   @impl GenServer
@@ -159,7 +159,7 @@ defmodule NanoKVMGo.Metrics do
   end
 
   @impl GenServer
-  def handle_info(:sample, state), do: {:noreply, sample(state)}
+  def handle_info(:sample, state), do: {:noreply, take_sample(state)}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, drop_subscriber(state, pid)}
@@ -178,17 +178,21 @@ defmodule NanoKVMGo.Metrics do
     end
   end
 
-  defp sample(state) do
+  defp take_sample(state) do
     _ref = Process.send_after(self(), :sample, state.interval)
 
-    case read(Path.join(state.root, "proc")) do
-      {:ok, reading} -> compare(%{state | reading: reading}, state.reading, reading)
-      :error -> state
+    case {state.reading, read(state.root)} do
+      {_last, :error} -> state
+      {nil, {:ok, reading}} -> %{state | reading: reading}
+      {last, {:ok, reading}} -> publish(%{state | reading: reading}, sample(last, reading))
     end
   end
 
-  # The counters, which the next reading turns into rates.
-  defp read(proc) do
+  # The counters, which the next reading turns into rates, and what is
+  # taken as it is.
+  defp read(root) do
+    proc = Path.join(root, "proc")
+
     with {:ok, stat} <- File.read(Path.join(proc, "stat")),
          [_ | _] = cpu <- parse_stat(stat),
          {:ok, meminfo} <- File.read(Path.join(proc, "meminfo")),
@@ -198,16 +202,17 @@ defmodule NanoKVMGo.Metrics do
          at: System.monotonic_time(:millisecond),
          cpu: cpu,
          memory: parse_meminfo(meminfo),
-         network: parse_net_dev(net_dev)
+         network: parse_net_dev(net_dev),
+         temperature: temperature(root),
+         load: read_load(proc),
+         uptime: read_uptime(proc)
        }}
     else
       _error -> :error
     end
   end
 
-  defp compare(state, nil, _reading), do: state
-
-  defp compare(state, last, reading) do
+  defp sample(last, reading) do
     seconds = max(reading.at - last.at, 1) / 1000
     [total | cores] = cpu_use(last.cpu, reading.cpu)
     %{total: memory_total, available: available} = reading.memory
@@ -220,15 +225,17 @@ defmodule NanoKVMGo.Metrics do
         {name, %{down: max(rx - last_rx, 0) / seconds, up: max(tx - last_tx, 0) / seconds}}
       end)
 
-    sample = %{
+    %{
       cpu: %{total: total, cores: cores},
       memory: %{used: used, total: memory_total, percent: percent(used, memory_total)},
-      temperature: temperature(state.root),
+      temperature: reading.temperature,
       network: network,
-      load: read_load(Path.join(state.root, "proc")),
-      uptime: read_uptime(Path.join(state.root, "proc"))
+      load: reading.load,
+      uptime: reading.uptime
     }
+  end
 
+  defp publish(state, sample) do
     for {pid, _ref} <- state.subscribers, do: send(pid, {__MODULE__, sample})
     %{state | current: sample, history: remember(state.history, sample, state.keep)}
   end

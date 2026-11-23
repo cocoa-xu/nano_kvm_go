@@ -167,7 +167,6 @@ defmodule NanoKVMGo.Hardware do
     0x82 => "Sony"
   }
 
-  # Arm's part numbers in /proc/cpuinfo.
   @arm_cores %{
     0xC07 => "Cortex-A7",
     0xC09 => "Cortex-A9",
@@ -235,8 +234,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # ---- The board
-
   defp soc_name(nil), do: nil
 
   defp soc_name(compatible) do
@@ -260,7 +257,6 @@ defmodule NanoKVMGo.Hardware do
     cpuinfo |> String.split("\n") |> Enum.count(&String.match?(&1, ~r/^processor\s*:/))
   end
 
-  # The first line with that field.
   defp cpuinfo_field(cpuinfo, field) do
     case Regex.run(~r/^#{Regex.escape(field)}\s*:[ \t]*(.*?)\s*$/m, cpuinfo) do
       [_line, value] -> value
@@ -277,10 +273,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # ---- The parts
-
-  # The devices on the buses parts sit on, with their device tree
-  # compatibles.
   defp devices(root) do
     for bus <- @buses,
         dir <- root |> Path.join("sys/bus/#{bus}/devices/*") |> Path.wildcard() |> Enum.sort() do
@@ -324,9 +316,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # ---- Storage
-
-  # The block device of the SD or MMC card.
   defp card_disk(root) do
     root
     |> Path.join("sys/block/mmcblk*")
@@ -358,7 +347,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # "12/2022" to "2022-12".
   defp card_date(nil), do: nil
 
   defp card_date(date) do
@@ -405,7 +393,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # The mounts by device number ("179:4"): where, and the file system type.
   defp mounts(root) do
     for line <- String.split(read(root, "proc/self/mountinfo") || "", "\n"),
         [left, right] <- [String.split(line, " - ", parts: 2)],
@@ -436,8 +423,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # ---- Files
-
   defp read(dir, file) do
     case File.read(Path.join(dir, file)) do
       {:ok, text} -> String.trim(text)
@@ -445,7 +430,6 @@ defmodule NanoKVMGo.Hardware do
     end
   end
 
-  # A device tree property of NUL-terminated strings.
   defp read_strings(dir, file) do
     case File.read(Path.join(dir, file)) do
       {:ok, text} -> String.split(text, <<0>>, trim: true)

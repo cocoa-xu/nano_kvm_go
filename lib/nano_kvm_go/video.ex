@@ -370,7 +370,6 @@ defmodule NanoKVMGo.Video do
     end
   end
 
-  # The next program starts with a keyframe for everyone.
   defp stopped(state) do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
     %{state | port: nil, subscribers: subscribers}

@@ -28,7 +28,6 @@ defmodule NanoKVMGo.Touch do
   @driver_name "Hynitron CST816x Series Touchscreen"
   @retry_delay 2_000
 
-  # The codes of struct input_event used here.
   @ev_syn 0
   @ev_key 1
   @ev_abs 3
@@ -140,7 +139,6 @@ defmodule NanoKVMGo.Touch do
   defp handle_event({@ev_syn, 0, _value}, state), do: report(state)
   defp handle_event(_event, state), do: state
 
-  # A report a frame, when the touch changed.
   defp report(state) do
     event = touch_event(state.touching, state.reported, {state.x, state.y})
 

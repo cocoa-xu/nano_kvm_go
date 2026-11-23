@@ -1,6 +1,5 @@
 defmodule NanoKVMGo.Thermal do
   @moduledoc false
-  # The SoC temperature, from the thermal zone of its on-die sensor.
 
   @zone "soc-thermal"
 

@@ -309,8 +309,6 @@ defmodule NanoKVMGo.Expansion do
   @impl GenServer
   def terminate(_reason, state), do: release(state)
 
-  # The mode the kernel has.
-
   defp read_mode(state) do
     with {:ok, text} <- File.read(Path.join(state.device, "mode")) do
       {:ok, to_mode(String.trim(text))}
@@ -342,8 +340,6 @@ defmodule NanoKVMGo.Expansion do
 
   defp to_mode(name), do: Map.get(@modes, name, :off)
   defp from_mode(mode), do: mode |> Atom.to_string() |> String.replace("_", "-")
-
-  # The mode persisted in the U-Boot environment; "" is the mode at boot.
 
   defp persisted_mode(state) do
     with name when is_binary(name) and name != "" <- state.kv.get(@variable),
@@ -380,8 +376,6 @@ defmodule NanoKVMGo.Expansion do
     end
   end
 
-  # What each line is, and what this process holds of it.
-
   defp role(mode, line), do: @roles |> Map.fetch!(mode) |> elem(line)
 
   defp check_role(state, line, wanted) do
@@ -407,8 +401,6 @@ defmodule NanoKVMGo.Expansion do
 
     %{line: line, role: role(mode, line), gpio: gpio, pwm: state.pwms[line]}
   end
-
-  # GPIO lines open as inputs with edges for the subscribers, or as outputs.
 
   defp open_gpio(state, line, direction) do
     with :ok <- check_role(state, line, :gpio) do
@@ -444,7 +436,6 @@ defmodule NanoKVMGo.Expansion do
     end
   end
 
-  # Edges of an input line for the subscribers, if there are any.
   defp edges(state, line) do
     case state.gpios[line] do
       %{direction: :input, edges: false, handle: handle} when map_size(state.subscribers) > 0 ->
@@ -456,8 +447,6 @@ defmodule NanoKVMGo.Expansion do
     end
   end
 
-  # Edges of a mode's GPIO inputs for the subscribers: unopened lines open
-  # as inputs, outputs stay outputs.
   defp watch(state, mode) when map_size(state.subscribers) > 0,
     do: Enum.reduce(@lines, state, &watch_line(&2, mode, &1))
 
@@ -478,8 +467,6 @@ defmodule NanoKVMGo.Expansion do
         state
     end
   end
-
-  # PWM channels through the chip's sysfs directory.
 
   defp export_pwm(%{pwm_chip: nil}, _line), do: {:error, :no_pwm_chip}
 
@@ -536,7 +523,6 @@ defmodule NanoKVMGo.Expansion do
     end)
   end
 
-  # Gives back the GPIOs and PWM channels this process opened.
   defp release(state) do
     for {_line, %{handle: handle}} <- state.gpios, do: state.gpio.close(handle)
     Enum.reduce(Map.keys(state.pwms), %{state | gpios: %{}}, &stop_pwm_channel(&2, &1))

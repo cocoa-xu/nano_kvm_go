@@ -180,8 +180,6 @@ defmodule NanoKVMGo.Display do
     end
   end
 
-  # Writes the rows from the first to the last that differ from what the
-  # framebuffer holds.
   defp show_changes(device, pixels, info) do
     row = info.width * 2
 
@@ -193,7 +191,6 @@ defmodule NanoKVMGo.Display do
     end
   end
 
-  # The rows the framebuffer holds; rows past its end are missing.
   defp read_rows(device, %{width: width, height: height, stride: stride}) do
     case :file.pread(device, 0, stride * height) do
       {:ok, data} -> {:ok, unpad(data, width * 2, stride)}
@@ -257,7 +254,6 @@ defmodule NanoKVMGo.Display do
     pwrite(device, for(row <- y0..(y1 - 1), do: {row * info.stride + x0 * 2, line}))
   end
 
-  # The framebuffer the panel's DRM driver emulates.
   defp find_framebuffer(root) do
     graphics = Path.join(root, "sys/class/graphics")
 

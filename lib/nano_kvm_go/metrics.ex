@@ -188,8 +188,6 @@ defmodule NanoKVMGo.Metrics do
     end
   end
 
-  # The counters, which the next reading turns into rates, and what is
-  # taken as it is.
   defp read(root) do
     proc = Path.join(root, "proc")
 
@@ -257,8 +255,6 @@ defmodule NanoKVMGo.Metrics do
 
   defp keep(value, list, keep), do: Enum.take([value | list], keep)
 
-  # Each CPU line of /proc/stat (all, then each core): its name, the time
-  # busy and the time in all.
   defp parse_stat(text) do
     for "cpu" <> _ = line <- String.split(text, "\n"),
         [name | fields] = String.split(line),
@@ -279,7 +275,6 @@ defmodule NanoKVMGo.Metrics do
     end
   end
 
-  # The memory in all and the memory available, in bytes.
   defp parse_meminfo(text) do
     fields =
       for line <- String.split(text, "\n"),
@@ -291,7 +286,6 @@ defmodule NanoKVMGo.Metrics do
     %{total: Map.get(fields, "MemTotal", 0), available: Map.get(fields, "MemAvailable", 0)}
   end
 
-  # The bytes each interface has received and sent, without the loopback.
   defp parse_net_dev(text) do
     for line <- String.split(text, "\n"),
         [name, counters] <- [String.split(line, ":", parts: 2)],

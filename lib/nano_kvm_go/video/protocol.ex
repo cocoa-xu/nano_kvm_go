@@ -11,7 +11,6 @@ defmodule NanoKVMGo.Video.Protocol do
           | {:input, NanoKVMGo.Video.input()}
           | :unknown
 
-  # Exit status of the program when the input changes: start it again.
   @exit_input_changed 3
 
   @spec decode(binary()) :: packet()

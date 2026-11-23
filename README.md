@@ -39,6 +39,15 @@ def deps do
 end
 ```
 
+The examples give the target computer a keyboard, a mouse and a sound card
+with the USB gadget of
+[`kuroneko_gadget`](https://github.com/cocoa-xu/kuroneko_gadget), which
+takes the board's settings from `NanoKVMGo.USB.gadget_options/1`:
+
+```elixir
+{:kuroneko_gadget, github: "cocoa-xu/kuroneko_gadget", tag: "v0.3.0"}
+```
+
 The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`,
 `nano_kvm_go_playback`, `nano_kvm_go_edid` and `nano_kvm_go_input`, C) are
 built for the target by the Nerves toolchain; the audio ones link alsa-lib,
@@ -85,11 +94,13 @@ The MJPEG stream is at `http://<device>:8088/stream.mjpg`.
 {:ok, %{name: "NanoKVM-Go", modes: [%{width: 3840, height: 2160, refresh: 30.0} | _]}} =
   NanoKVMGo.EDID.decode(edid)
 
+true = NanoKVMGo.EDID.valid?(other_edid)
 :ok = NanoKVMGo.Video.set_edid(other_edid)
 ```
 
 The bridge keeps the EDID in its flash; the source reads a new one when it
-next connects.
+next connects. `NanoKVMGo.Video.set_edid/2` takes only what
+`NanoKVMGo.EDID.valid?/1` does, and raises for anything else.
 
 ### Audio
 
@@ -187,7 +198,8 @@ NanoKVMGo.Hardware.info()
 
 # Each part with its Linux device and driver: a missing device or driver shows what failed.
 NanoKVMGo.Hardware.components()
-#=> [%{id: :video_bridge, chip: "Lontium LT7911EXC", bus: :i2c, device: "0-0041", driver: "lt7911exc"}, ...]
+#=> [%{id: :video_bridge, name: "Video input bridge", chip: "Lontium LT7911EXC", bus: :i2c,
+#=>    device: "0-0041", driver: "lt7911exc"}, ...]
 
 # The microSD card, its partitions and how full they are.
 NanoKVMGo.Hardware.storage()
@@ -246,7 +258,7 @@ NanoKVMGo.CMA.trial()
 The auxiliary USB-C port, the one with the lightning icon, carries two of
 the SoC's pads besides power; Sipeed's Finger Robot is a servo on them.
 They are inputs pulled down until you choose what they are, and the choice
-is kept for the next boots:
+persists for the next boots:
 
 ```elixir
 NanoKVMGo.Expansion.info()

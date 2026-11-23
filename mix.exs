@@ -85,6 +85,7 @@ defmodule NanoKVMGo.MixProject do
     [
       main: "readme",
       extras: ["README.md", "CHANGELOG.md", "LICENSE"],
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       source_ref: "v#{@version}",
       groups_for_modules: [
         "Video and audio": [

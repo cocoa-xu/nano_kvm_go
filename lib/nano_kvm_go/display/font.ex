@@ -54,14 +54,29 @@ defmodule NanoKVMGo.Display.Font do
               "GBgYAAAAAHAYGBgYDg4YGBgYcAAAAAAAAAAAADJ+TAAAAAAAAAA="
           )
 
+  @width 8
+  @height 16
+
+  @runs @glyphs
+        |> :binary.bin_to_list()
+        |> Enum.map(fn row ->
+          for(<<(pixel::1 <- <<row>>)>>, do: pixel)
+          |> Enum.with_index()
+          |> Enum.chunk_by(fn {pixel, _offset} -> pixel end)
+          |> Enum.flat_map(fn
+            [{1, offset} | _] = run -> [{offset, length(run)}]
+            [{0, _offset} | _] -> []
+          end)
+        end)
+        |> List.to_tuple()
+
   @spec width() :: 8
-  def width, do: 8
+  def width, do: @width
 
   @spec height() :: 16
-  def height, do: 16
+  def height, do: @height
 
-  @doc "The 16 rows of a character, `?` for those the font has not."
-  @spec glyph(char()) :: <<_::128>>
-  def glyph(char) when char in 32..126, do: binary_part(@glyphs, (char - 32) * 16, 16)
-  def glyph(_char), do: glyph(??)
+  @spec runs(char(), 0..15) :: [{0..7, 1..8}]
+  def runs(char, row) when char in 32..126, do: elem(@runs, (char - 32) * @height + row)
+  def runs(_char, row), do: runs(??, row)
 end

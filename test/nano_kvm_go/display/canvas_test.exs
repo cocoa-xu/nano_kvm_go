@@ -54,6 +54,12 @@ defmodule NanoKVMGo.Display.CanvasTest do
              Canvas.new(16, 16) |> Canvas.text(0, 0, "e?", @white) |> Canvas.render()
   end
 
+  test "refuses a scale or a rotation it cannot draw" do
+    canvas = Canvas.new(8, 16)
+    assert_raise ArgumentError, fn -> Canvas.text(canvas, 0, 0, "x", @white, scale: 0) end
+    assert_raise ArgumentError, fn -> Canvas.render(canvas, rotate: 90) end
+  end
+
   test "characters past ASCII show as ?" do
     a = Canvas.new(8, 16) |> Canvas.text(0, 0, "é", @white) |> Canvas.render()
     b = Canvas.new(8, 16) |> Canvas.text(0, 0, "?", @white) |> Canvas.render()

@@ -15,6 +15,10 @@ defmodule NanoKVMGo.Display.Canvas do
   """
 
   alias NanoKVMGo.Display.Font
+  alias NanoKVMGo.Options
+
+  @glyph_width Font.width()
+  @glyph_height Font.height()
 
   defstruct [:width, :height, :background, items: []]
 
@@ -25,8 +29,12 @@ defmodule NanoKVMGo.Display.Canvas do
           width: pos_integer(),
           height: pos_integer(),
           background: color(),
-          items: list()
+          items: [item()]
         }
+
+  @typep item() ::
+           {:rect, integer(), integer(), non_neg_integer(), non_neg_integer(), color()}
+           | {:text, integer(), integer(), charlist(), color(), pos_integer()}
 
   @doc """
   An empty picture.
@@ -65,9 +73,9 @@ defmodule NanoKVMGo.Display.Canvas do
 
     * `:scale` - the size, 1 for 8 × 16 pixels a character (the default)
   """
-  @spec text(t(), integer(), integer(), String.t(), color(), keyword()) :: t()
+  @spec text(t(), integer(), integer(), String.t(), color(), [{:scale, pos_integer()}]) :: t()
   def text(canvas, x, y, string, color, opts \\ []) do
-    scale = Keyword.get(opts, :scale, 1)
+    scale = opts |> Options.validate!([scale: 1], &valid?/2) |> Keyword.fetch!(:scale)
     %{canvas | items: [{:text, x, y, String.to_charlist(string), color, scale} | canvas.items]}
   end
 
@@ -80,7 +88,7 @@ defmodule NanoKVMGo.Display.Canvas do
   """
   @spec text_width(String.t(), pos_integer()) :: non_neg_integer()
   def text_width(string, scale \\ 1) when is_integer(scale) and scale > 0,
-    do: length(String.to_charlist(string)) * Font.width() * scale
+    do: length(String.to_charlist(string)) * @glyph_width * scale
 
   @doc """
   The picture as rows of little-endian RGB565 pixels, top to bottom, as a
@@ -91,8 +99,9 @@ defmodule NanoKVMGo.Display.Canvas do
     * `:rotate` - 0 (the default) or 180 degrees, for a display mounted
       upside down
   """
-  @spec render(t(), keyword()) :: binary()
+  @spec render(t(), [{:rotate, 0 | 180}]) :: binary()
   def render(%__MODULE__{} = canvas, opts \\ []) do
+    rotate = opts |> Options.validate!([rotate: 0], &valid?/2) |> Keyword.fetch!(:rotate)
     items = Enum.reverse(canvas.items)
     blank = :binary.copy(<<canvas.background::little-16>>, canvas.width)
 
@@ -101,7 +110,7 @@ defmodule NanoKVMGo.Display.Canvas do
         Enum.reduce(items, blank, &paint(&1, &2, y, canvas.width))
       end
 
-    case Keyword.get(opts, :rotate, 0) do
+    case rotate do
       0 -> IO.iodata_to_binary(rows)
       180 -> rows |> Enum.reverse() |> Enum.map(&reverse_pixels/1) |> IO.iodata_to_binary()
     end
@@ -117,37 +126,21 @@ defmodule NanoKVMGo.Display.Canvas do
   end
 
   defp paint({:text, x, top, chars, color, scale}, row, y, row_width)
-       when y >= top and y < top + 16 * scale do
+       when y >= top and y < top + @glyph_height * scale do
     line = div(y - top, scale)
 
     chars
     |> Enum.with_index()
     |> Enum.reduce(row, fn {char, i}, row ->
-      <<_::binary-size(^line), bits, _::binary>> = Font.glyph(char)
-      strokes(bits, 7, row, row_width, x + i * 8 * scale, scale, color)
+      left = x + i * @glyph_width * scale
+
+      Enum.reduce(Font.runs(char, line), row, fn {offset, length}, row ->
+        fill(row, row_width, left + offset * scale, length * scale, color)
+      end)
     end)
   end
 
   defp paint(_item, row, _y, _row_width), do: row
-
-  # The runs of set bits, from the leftmost pixel.
-  defp strokes(_bits, bit, row, _row_width, _x, _scale, _color) when bit < 0, do: row
-
-  defp strokes(bits, bit, row, row_width, x, scale, color) do
-    if Bitwise.band(Bitwise.bsr(bits, bit), 1) == 1 do
-      run = run_length(bits, bit, 0)
-      row = fill(row, row_width, x + (7 - bit) * scale, run * scale, color)
-      strokes(bits, bit - run, row, row_width, x, scale, color)
-    else
-      strokes(bits, bit - 1, row, row_width, x, scale, color)
-    end
-  end
-
-  defp run_length(bits, bit, n) do
-    if bit >= 0 and Bitwise.band(Bitwise.bsr(bits, bit), 1) == 1,
-      do: run_length(bits, bit - 1, n + 1),
-      else: n
-  end
 
   defp fill(row, row_width, x, width, color) do
     from = max(x, 0)
@@ -162,4 +155,7 @@ defmodule NanoKVMGo.Display.Canvas do
       row
     end
   end
+
+  defp valid?(:scale, scale), do: is_integer(scale) and scale > 0
+  defp valid?(:rotate, rotate), do: rotate in [0, 180]
 end

@@ -1,7 +1,8 @@
 defmodule NanoKVMGo.Peer do
   @moduledoc false
   # Processes on another node, for the tests of subscribers there: the test
-  # node turns distributed, with epmd, and a peer node runs Elixir.
+  # node turns distributed, with an epmd on the loopback interface if none
+  # runs, and a peer node runs Elixir.
 
   import ExUnit.Callbacks, only: [on_exit: 1]
 
@@ -31,7 +32,7 @@ defmodule NanoKVMGo.Peer do
 
   defp start_peer do
     if not Node.alive?() do
-      {_output, 0} = System.cmd("epmd", ["-daemon"])
+      {_output, 0} = System.cmd("epmd", ["-address", "127.0.0.1", "-daemon"])
       {:ok, _pid} = Node.start(:"nano_kvm_go_test@127.0.0.1")
       on_exit(&Node.stop/0)
     end
@@ -41,7 +42,7 @@ defmodule NanoKVMGo.Peer do
         name: :peer.random_name(),
         host: ~c"127.0.0.1",
         longnames: true,
-        args: [~c"-pa", :code.lib_dir(:elixir) ++ ~c"/ebin"]
+        args: [~c"-start_epmd", ~c"false", ~c"-pa", :code.lib_dir(:elixir) ++ ~c"/ebin"]
       })
 
     node

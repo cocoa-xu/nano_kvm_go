@@ -56,7 +56,10 @@ defmodule NanoKVMGo.MixProject do
   defp package do
     [
       licenses: ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"],
-      links: %{"GitHub" => @source_url},
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "https://hexdocs.pm/nano_kvm_go/changelog.html"
+      },
       files: [
         "lib",
         "c_src/*.[ch]",

@@ -25,8 +25,9 @@ defmodule NanoKVMGo.Video do
       reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
     * `:h264_qp` - the H.264 quantizer, 0 (best) to 51, 30 by default
-    * `:devices` - the devices to capture and encode with, by default the
-      board's, found by their drivers each time the capture starts
+    * `:devices` - the devices to capture and encode with, see
+      `t:devices/0`, by default the board's, found by their drivers each
+      time the capture starts
     * `:program` - the port program, the library's `nano_kvm_go_video` by
       default
 

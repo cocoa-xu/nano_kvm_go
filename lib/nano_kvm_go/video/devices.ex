@@ -5,7 +5,7 @@ defmodule NanoKVMGo.Video.Devices do
 
   @capture "ax620e-vin"
   @jpeg "axera,ax620e-jenc-enc"
-  @h264 "axera,ax620e-venc-enc"
+  @encoder "axera,ax620e-venc-enc"
 
   @spec capture() :: String.t() | nil
   def capture, do: find(@capture)
@@ -13,8 +13,8 @@ defmodule NanoKVMGo.Video.Devices do
   @spec jpeg() :: String.t() | nil
   def jpeg, do: find(@jpeg)
 
-  @spec h264() :: String.t() | nil
-  def h264, do: find(@h264)
+  @spec encoder() :: String.t() | nil
+  def encoder, do: find(@encoder)
 
   @spec sysfs_dir(String.t()) :: String.t()
   def sysfs_dir("/dev/" <> node), do: Path.join([@video4linux, node, "device"])

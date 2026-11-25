@@ -6,7 +6,7 @@ defmodule NanoKVMGo.Video.Protocol do
 
   @type packet() ::
           {:log, String.t()}
-          | {:h264, :key | :delta, binary()}
+          | {:h264 | :h265, :key | :delta, binary()}
           | {:input, NanoKVMGo.Video.input()}
           | :unknown
 
@@ -16,6 +16,8 @@ defmodule NanoKVMGo.Video.Protocol do
   def decode(<<0, line::binary>>), do: {:log, line}
   def decode(<<1, au::binary>>), do: {:h264, :delta, au}
   def decode(<<2, au::binary>>), do: {:h264, :key, au}
+  def decode(<<4, au::binary>>), do: {:h265, :delta, au}
+  def decode(<<5, au::binary>>), do: {:h265, :key, au}
 
   def decode(<<3, text::binary>>) do
     case parse_input(text) do
@@ -26,20 +28,34 @@ defmodule NanoKVMGo.Video.Protocol do
 
   def decode(_packet), do: :unknown
 
-  @spec command(:h264_start | :h264_stop | :keyframe | {:encoding, NanoKVMGo.Video.encoding()}) ::
-          String.t()
-  def command(:h264_start), do: "1"
-  def command(:h264_stop), do: "0"
+  @spec command(
+          :start_stream
+          | :stop_stream
+          | :keyframe
+          | {:encoding, NanoKVMGo.Video.encoding()}
+        ) :: String.t()
+  def command(:start_stream), do: "1"
+  def command(:stop_stream), do: "0"
   def command(:keyframe), do: "k"
   def command({:encoding, encoding}), do: "e " <> encoding(encoding)
 
-  # "<cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>"
+  # "<h264|h265> <cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>
+  # <auto|bt601|bt709> <auto|full|limited>"
   @spec encoding(NanoKVMGo.Video.encoding()) :: String.t()
   def encoding(encoding) do
     rate_control = Map.fetch!(%{constant_qp: "cq", cbr: "cbr", vbr: "vbr"}, encoding.rate_control)
 
     Enum.join(
-      [rate_control, encoding.bitrate, encoding.qp, encoding.keyframe_interval, encoding.max_fps],
+      [
+        encoding.codec,
+        rate_control,
+        encoding.bitrate,
+        encoding.qp,
+        encoding.keyframe_interval,
+        encoding.max_fps,
+        encoding.color_matrix,
+        encoding.color_range
+      ],
       " "
     )
   end

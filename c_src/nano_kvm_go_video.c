@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
  * nano_kvm_go_video: V4L2 capture -> V4L2 M2M JPEG encoder -> MJPEG over
- * HTTP, and optionally -> V4L2 stateless H.264 encoder -> stdout for an
- * Erlang port.
+ * HTTP, and optionally -> V4L2 stateless H.264 or H.265 encoder -> stdout for
+ * an Erlang port.
  *
  * Capture buffers are handed to the encoders as DMA-BUFs (no copy); encoded
  * JPEGs are sent straight from the encoder's buffers.
@@ -12,15 +12,17 @@
  *
  * With KVM_PORT set (run as an Erlang port), stdout carries {packet, 4}
  * frames [type][payload] (type 0 log line, 1 H.264 access unit, 2 H.264
- * keyframe, 3 input: "<width>x<height>@<fps>", "none" or "unsupported"),
- * stdin takes {packet, 4} commands and its end stops the program. With
- * KVM_H264_DEV=<H.264 encoder device> as well, the commands are "1" start
- * H.264, "0" stop, "k" make the next frame an IDR, and
- * "e <rate control> <bit/s> <QP> <keyframe interval> <max fps>" the
- * encoding, which KVM_H264_ENCODING gives at the start: rate control "cq"
- * (a constant QP), "cbr" (a constant bitrate) or "vbr" (the QP, more where
- * the bitrate would go over); a keyframe interval in frames; a max fps of
- * 0 for the input's.
+ * keyframe, 3 input: "<width>x<height>@<fps>", "none" or "unsupported",
+ * 4 H.265 access unit, 5 H.265 keyframe), stdin takes {packet, 4} commands
+ * and its end stops the program. With KVM_ENCODER_DEV=<video encoder
+ * device> as well, the commands are "1" start the video stream, "0" stop,
+ * "k" make the next frame an IDR, and "e <codec> <rate control> <bit/s> <QP>
+ * <keyframe interval> <max fps> <matrix> <range>" the encoding, which
+ * KVM_ENCODING gives at the start: codec "h264" or "h265"; rate control
+ * "cq" (a constant QP), "cbr" (a constant bitrate) or "vbr" (the QP, more
+ * where the bitrate would go over); a keyframe interval in frames; a max
+ * fps of 0 for the input's; the colour the stream declares, "auto", "bt601"
+ * or "bt709" and "auto", "full" or "limited".
  *
  * The program waits for an input it can capture and streams it at its own
  * size; when the input changes it exits with status 3 (EXIT_INPUT_CHANGED),
@@ -49,7 +51,7 @@
 #include <unistd.h>
 #include <math.h>
 
-#include "v4l2_h264_enc.h"
+#include "v4l2_stateless_enc.h"
 
 #define NCAP 4
 #define NJPEG 4
@@ -66,7 +68,7 @@ static int xioctl(int fd, unsigned long req, void *arg)
 	return r;
 }
 
-enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT };
+enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME };
 
 static int packet_mode;
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -364,22 +366,50 @@ static void *acceptor(void *arg)
 }
 
 /*
- * H.264: one frame in flight, a media request per frame (the encoder's source
- * queue requires them). frame_num and POC are 16 bits: the AX620E VENC writes
- * them so whatever the SPS says, and the kernel declares that in the SPS.
+ * The video encoder, H.264 or H.265: one frame in flight, a media request per
+ * frame (the encoder's source queue requires them). H.264's frame_num and POC
+ * are 16 bits: the AX620E VENC writes them so whatever the SPS says, and the
+ * kernel declares that in the SPS. The codec and the colour the stream
+ * declares are the encoder's formats: changing them restarts the encoder
+ * between two frames.
  */
 #define NSTRM 2
+
+enum { CODEC_H264, CODEC_H265 };
+
+static const struct codec {
+	const char *name, *label;
+	__u32 fourcc;
+	int pkt_frame, pkt_keyframe;
+} codecs[] = {
+	[CODEC_H264] = { "h264", "H.264", V4L2_PIX_FMT_H264_SLICE, PKT_FRAME, PKT_KEYFRAME },
+	[CODEC_H265] = { "h265", "H.265", V4L2_PIX_FMT_HEVC_SLICE, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME },
+};
+
+/* What the stream says its samples are. */
+struct colour {
+	int bt601, limited;
+};
 
 static struct {
 	int fd, media, request;
 	int busy;		/* capture buffer in the encoder, or -1 */
 	int request_busy;
-	int on, force_idr;
+	int on, force_idr, streaming;
+	int codec;
+	struct colour colour;
 	unsigned int frame_num, poc, idr_pic_id, since_idr;
 	double last;		/* when the last frame went in */
 	void *strm[NSTRM];
-} h264 = { .fd = -1, .media = -1, .request = -1, .busy = -1 };
-static unsigned long h264_bytes;	/* sent since the last statistics */
+	size_t strm_length[NSTRM];
+	struct v4l2_format cfmt;	/* the capture's */
+	unsigned int fps;
+} venc = { .fd = -1, .media = -1, .request = -1, .busy = -1 };
+
+/* What the encoding asks for: the encoder takes it when it next starts. */
+static int want_codec = CODEC_H264;
+static struct colour want_colour;
+static unsigned long venc_bytes;	/* sent since the last statistics */
 
 /*
  * Rate control, frame by frame: a frame takes about complexity / 2^(QP/6)
@@ -409,15 +439,27 @@ static int clamp_qp(int qp)
 	return qp < rc.qp_floor ? rc.qp_floor : qp > rc.qp_ceil ? rc.qp_ceil : qp;
 }
 
-/* "<cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>"; returns whether it was one. */
+/*
+ * "<h264|h265> <cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>
+ * <auto|bt601|bt709> <auto|full|limited>"; returns whether it was one. The
+ * bridge hands over BT.709 at full range, which "auto" says.
+ */
 static int rc_set(const char *text)
 {
-	char mode[4];
+	char codec[5], mode[4], matrix[6], range[8];
 	unsigned int bitrate, gop, max_fps;
-	int qp;
+	int qp, c;
 
-	if (sscanf(text, "%3s %u %d %u %u", mode, &bitrate, &qp, &gop, &max_fps) != 5 || qp < 0 ||
-	    qp > 51 || !gop || (strcmp(mode, "cq") && !bitrate))
+	if (sscanf(text, "%4s %3s %u %d %u %u %5s %7s", codec, mode, &bitrate, &qp, &gop, &max_fps,
+		   matrix, range) != 8 || qp < 0 || qp > 51 || !gop ||
+	    (strcmp(mode, "cq") && !bitrate) ||
+	    (strcmp(matrix, "auto") && strcmp(matrix, "bt601") && strcmp(matrix, "bt709")) ||
+	    (strcmp(range, "auto") && strcmp(range, "full") && strcmp(range, "limited")))
+		return 0;
+	for (c = 0; c < (int)(sizeof(codecs) / sizeof(codecs[0])); c++)
+		if (!strcmp(codec, codecs[c].name))
+			break;
+	if (c == (int)(sizeof(codecs) / sizeof(codecs[0])))
 		return 0;
 	if (!strcmp(mode, "cq"))
 		rc.mode = RC_CQ;
@@ -427,6 +469,9 @@ static int rc_set(const char *text)
 		rc.mode = RC_VBR;
 	else
 		return 0;
+	want_codec = c;
+	want_colour.bt601 = !strcmp(matrix, "bt601");
+	want_colour.limited = !strcmp(range, "limited");
 	rc.bitrate = bitrate;
 	rc.qp_floor = rc.mode == RC_CBR ? QP_MIN : qp;
 	rc.qp_ceil = rc.mode == RC_CQ ? qp : QP_MAX;
@@ -435,8 +480,9 @@ static int rc_set(const char *text)
 	rc.debt = 0;
 	rc.qp = rc.mode == RC_CBR ? clamp_qp(rc.qp) : qp;
 	rc.key_qp = rc.mode == RC_CBR ? clamp_qp(rc.key_qp) : qp;
-	logline("H.264: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most", mode,
-		bitrate, qp, gop, max_fps);
+	logline("%s: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most, %s, %s range",
+		codecs[c].label, mode, bitrate, qp, gop, max_fps,
+		want_colour.bt601 ? "BT.601" : "BT.709", want_colour.limited ? "limited" : "full");
 	return 1;
 }
 
@@ -512,25 +558,25 @@ static int open_media(const char *video)
 	return fd;
 }
 
-static void h264_ctrl(unsigned int id, int value)
+static void venc_ctrl(unsigned int id, int value)
 {
 	struct v4l2_ext_control c = { .id = id, .value = value };
 	struct v4l2_ext_controls cs = { .which = V4L2_CTRL_WHICH_CUR_VAL, .count = 1,
 					.controls = &c };
 
-	if (xioctl(h264.fd, VIDIOC_S_EXT_CTRLS, &cs))
-		die("H.264 control");
+	if (xioctl(venc.fd, VIDIOC_S_EXT_CTRLS, &cs))
+		die("encoder control");
 }
 
 /*
  * Sets an encoder's coded format, then its raw one (setting the coded format
- * resets the raw one) for the captured frames. The encoder rounds the raw
- * size up to macroblocks; cropping it back makes the stream carry the
- * picture's size. Returns the raw format: the capture buffers must hold its
- * sizeimage.
+ * resets the raw one) for the captured frames, with the colour the stream is
+ * to declare, if any. The encoder rounds the raw size up to macroblocks;
+ * cropping it back makes the stream carry the picture's size. Returns the
+ * raw format: the capture buffers must hold its sizeimage.
  */
 static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2_format *cfmt,
-					  const char *name)
+					  const struct colour *colour, const char *name)
 {
 	struct v4l2_format c = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE };
 	struct v4l2_format o = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE };
@@ -549,6 +595,14 @@ static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2
 	o.fmt.pix_mp.pixelformat = cfmt->fmt.pix.pixelformat;
 	o.fmt.pix_mp.num_planes = 1;
 	o.fmt.pix_mp.plane_fmt[0].bytesperline = cfmt->fmt.pix.bytesperline;
+	if (colour) {
+		o.fmt.pix_mp.colorspace = colour->bt601 ? V4L2_COLORSPACE_SMPTE170M :
+							  V4L2_COLORSPACE_REC709;
+		o.fmt.pix_mp.ycbcr_enc = colour->bt601 ? V4L2_YCBCR_ENC_601 : V4L2_YCBCR_ENC_709;
+		o.fmt.pix_mp.xfer_func = V4L2_XFER_FUNC_709;
+		o.fmt.pix_mp.quantization = colour->limited ? V4L2_QUANTIZATION_LIM_RANGE :
+							      V4L2_QUANTIZATION_FULL_RANGE;
+	}
 	if (xioctl(fd, VIDIOC_S_FMT, &o))
 		die("S_FMT encoder output");
 	if (o.fmt.pix_mp.width != w || o.fmt.pix_mp.height != h) {
@@ -566,22 +620,18 @@ static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2
 	return o;
 }
 
-static void h264_open(const char *dev)
+static void venc_open(const char *dev)
 {
-	h264.fd = open(dev, O_RDWR | O_NONBLOCK);
-	h264.media = open_media(dev);
-	if (h264.fd < 0 || h264.media < 0 ||
-	    xioctl(h264.media, MEDIA_IOC_REQUEST_ALLOC, &h264.request))
-		die("H.264 encoder");
+	venc.fd = open(dev, O_RDWR | O_NONBLOCK);
+	venc.media = open_media(dev);
+	if (venc.fd < 0 || venc.media < 0 ||
+	    xioctl(venc.media, MEDIA_IOC_REQUEST_ALLOC, &venc.request))
+		die("video encoder");
 }
 
-/* After encoder_formats(). */
-static void h264_start(unsigned int fps)
+/* The SPS and PPS the H.264 encoder fills in; H.265's work as they are. */
+static void h264_setup(void)
 {
-	enum v4l2_buf_type out_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-	enum v4l2_buf_type strm_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-	struct v4l2_streamparm parm = { .type = out_type };
-	struct v4l2_requestbuffers req = { 0 };
 	struct v4l2_ctrl_h264_sps sps = {
 		.profile_idc = 66,	/* constrained baseline: decodable everywhere */
 		.constraint_set_flags = V4L2_H264_SPS_CONSTRAINT_SET0_FLAG |
@@ -603,156 +653,220 @@ static void h264_start(unsigned int fps)
 	};
 	struct v4l2_ext_controls cs = { .which = V4L2_CTRL_WHICH_CUR_VAL, .count = 2,
 					.controls = init };
-	const char *encoding = getenv("KVM_H264_ENCODING");
+
+	if (xioctl(venc.fd, VIDIOC_S_EXT_CTRLS, &cs))
+		die("H.264 SPS/PPS");
+	venc_ctrl(V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
+	venc_ctrl(V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE, 0);
+}
+
+/* Starts the encoder with the codec and colour asked for: a keyframe first. */
+static void venc_start(void)
+{
+	enum v4l2_buf_type out_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	enum v4l2_buf_type strm_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	struct v4l2_streamparm parm = { .type = out_type };
+	struct v4l2_requestbuffers req = { 0 };
+	const struct codec *codec = &codecs[want_codec];
 	int i;
 
-	rc.fps = fps ? fps : 30;
-	if (encoding && !rc_set(encoding))
-		logline("H.264: not an encoding: %s", encoding);
+	venc.codec = want_codec;
+	venc.colour = want_colour;
+	encoder_formats(venc.fd, codec->fourcc, &venc.cfmt, &venc.colour, codec->label);
 	parm.parm.output.timeperframe.numerator = 1;
-	parm.parm.output.timeperframe.denominator = fps ? fps : 30;
-	if (xioctl(h264.fd, VIDIOC_S_PARM, &parm))
-		logline("S_PARM H.264: %s", strerror(errno));
-	if (xioctl(h264.fd, VIDIOC_S_EXT_CTRLS, &cs))
-		die("H.264 SPS/PPS");
-	h264_ctrl(V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
-	h264_ctrl(V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE, 0);
+	parm.parm.output.timeperframe.denominator = venc.fps;
+	if (xioctl(venc.fd, VIDIOC_S_PARM, &parm))
+		logline("S_PARM %s: %s", codec->label, strerror(errno));
+	if (venc.codec == CODEC_H264)
+		h264_setup();
 
 	req.count = NCAP;
 	req.type = out_type;
 	req.memory = V4L2_MEMORY_DMABUF;
-	if (xioctl(h264.fd, VIDIOC_REQBUFS, &req))
-		die("REQBUFS H.264 output");
+	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req))
+		die("REQBUFS encoder output");
 	memset(&req, 0, sizeof(req));
 	req.count = NSTRM;
 	req.type = strm_type;
 	req.memory = V4L2_MEMORY_MMAP;
-	if (xioctl(h264.fd, VIDIOC_REQBUFS, &req) || req.count < NSTRM)
-		die("REQBUFS H.264 capture");
+	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req) || req.count < NSTRM)
+		die("REQBUFS encoder capture");
 	for (i = 0; i < NSTRM; i++) {
 		struct v4l2_plane plane = { 0 };
 		struct v4l2_buffer buf = { .type = strm_type, .memory = V4L2_MEMORY_MMAP, .index = i,
 					   .m.planes = &plane, .length = 1 };
 
-		if (xioctl(h264.fd, VIDIOC_QUERYBUF, &buf))
-			die("QUERYBUF H.264");
-		h264.strm[i] = mmap(NULL, plane.length, PROT_READ, MAP_SHARED, h264.fd,
+		if (xioctl(venc.fd, VIDIOC_QUERYBUF, &buf))
+			die("QUERYBUF encoder");
+		venc.strm_length[i] = plane.length;
+		venc.strm[i] = mmap(NULL, plane.length, PROT_READ, MAP_SHARED, venc.fd,
 				    plane.m.mem_offset);
-		if (h264.strm[i] == MAP_FAILED)
-			die("mmap H.264");
-		if (xioctl(h264.fd, VIDIOC_QBUF, &buf))
-			die("QBUF H.264 capture");
+		if (venc.strm[i] == MAP_FAILED)
+			die("mmap encoder");
+		if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
+			die("QBUF encoder capture");
 	}
-	if (xioctl(h264.fd, VIDIOC_STREAMON, &out_type) ||
-	    xioctl(h264.fd, VIDIOC_STREAMON, &strm_type))
-		die("STREAMON H.264");
-	logline("H.264: %u fps", parm.parm.output.timeperframe.denominator);
+	if (xioctl(venc.fd, VIDIOC_STREAMON, &out_type) ||
+	    xioctl(venc.fd, VIDIOC_STREAMON, &strm_type))
+		die("STREAMON encoder");
+	venc.streaming = 1;
+	venc.force_idr = 1;
+	logline("%s: %u fps", codec->label, venc.fps);
+}
+
+/* Between two frames: nothing in the encoder. */
+static void venc_stop(void)
+{
+	enum v4l2_buf_type out_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	enum v4l2_buf_type strm_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	struct v4l2_requestbuffers req = { .memory = V4L2_MEMORY_DMABUF, .type = out_type };
+	int i;
+
+	if (xioctl(venc.fd, VIDIOC_STREAMOFF, &out_type) ||
+	    xioctl(venc.fd, VIDIOC_STREAMOFF, &strm_type))
+		die("STREAMOFF encoder");
+	for (i = 0; i < NSTRM; i++)
+		munmap(venc.strm[i], venc.strm_length[i]);
+	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req))
+		die("REQBUFS encoder output (free)");
+	req.memory = V4L2_MEMORY_MMAP;
+	req.type = strm_type;
+	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req))
+		die("REQBUFS encoder capture (free)");
+	venc.streaming = 0;
+}
+
+/* Whether the encoding asks for another codec or colour than the encoder's. */
+static int venc_changed(void)
+{
+	return want_codec != venc.codec || want_colour.bt601 != venc.colour.bt601 ||
+	       want_colour.limited != venc.colour.limited;
 }
 
 /* Whether a frame may go in now, at most max fps. */
-static int h264_due(void)
+static int venc_due(void)
 {
-	return !rc.max_fps || now() - h264.last >= 0.95 / rc.max_fps;
+	return !rc.max_fps || now() - venc.last >= 0.95 / rc.max_fps;
 }
 
 /* Each frame's QP goes in its request, with its parameters. */
-static void h264_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
+static void venc_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 {
-	struct v4l2_ctrl_h264_encode_params ep = { 0 };
-	struct v4l2_ext_control c[] = {
-		{ .id = V4L2_CID_STATELESS_H264_ENCODE_PARAMS, .size = sizeof(ep), .ptr = &ep },
-		{ .id = V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, .value = rc.key_qp },
-		{ .id = V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, .value = rc.qp },
-	};
+	struct v4l2_ctrl_h264_encode_params h264 = { 0 };
+	struct v4l2_ctrl_hevc_encode_params hevc = { 0 };
+	struct v4l2_ext_control c[3];
 	struct v4l2_ext_controls cs = { .which = V4L2_CTRL_WHICH_REQUEST_VAL,
-					.request_fd = h264.request, .count = 3, .controls = c };
+					.request_fd = venc.request, .count = 3, .controls = c };
 	struct v4l2_plane plane = { .m.fd = dmabuf_fd, .bytesused = cbuf->bytesused,
 				    .length = cbuf->length };
 	struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
 				   .memory = V4L2_MEMORY_DMABUF, .index = cbuf->index,
 				   .flags = V4L2_BUF_FLAG_REQUEST_FD,
-				   .request_fd = h264.request, .m.planes = &plane, .length = 1 };
+				   .request_fd = venc.request, .m.planes = &plane, .length = 1 };
+	int idr = venc.force_idr || venc.since_idr >= rc.gop;
 
-	if (h264.force_idr || h264.since_idr >= rc.gop) {
-		h264.force_idr = 0;
-		h264.since_idr = 0;
-		h264.frame_num = 0;
-		h264.poc = 0;
-		ep.slice_type = V4L2_H264_SLICE_TYPE_I;
-		ep.flags = V4L2_H264_ENCODE_FLAG_IDR_PIC;
-		ep.idr_pic_id = h264.idr_pic_id++ & 0xffff;
-		ep.nal_ref_idc = 3;
+	if (idr) {
+		venc.force_idr = 0;
+		venc.since_idr = 0;
+		venc.frame_num = 0;
+		venc.poc = 0;
 		rc.used_qp = rc.key_qp;
 	} else {
-		h264.frame_num = (h264.frame_num + 1) & 0xffff;
-		h264.poc = (h264.poc + 2) & 0xffff;
-		ep.slice_type = V4L2_H264_SLICE_TYPE_P;
-		ep.nal_ref_idc = 2;
+		venc.frame_num = (venc.frame_num + 1) & 0xffff;
 		rc.used_qp = rc.qp;
 	}
-	h264.since_idr++;
-	ep.frame_num = h264.frame_num;
-	ep.pic_order_cnt_lsb = h264.poc;
+	venc.since_idr++;
 
-	if (xioctl(h264.fd, VIDIOC_S_EXT_CTRLS, &cs))
-		die("H.264 encode params");
-	if (xioctl(h264.fd, VIDIOC_QBUF, &buf))
-		die("QBUF H.264 output");
-	if (xioctl(h264.request, MEDIA_REQUEST_IOC_QUEUE, NULL))
-		die("queue H.264 request");
-	h264.busy = cbuf->index;
-	h264.request_busy = 1;
-	h264.last = now();
+	if (venc.codec == CODEC_H264) {
+		if (!idr)
+			venc.poc = (venc.poc + 2) & 0xffff;
+		h264.slice_type = idr ? V4L2_H264_SLICE_TYPE_I : V4L2_H264_SLICE_TYPE_P;
+		h264.flags = idr ? V4L2_H264_ENCODE_FLAG_IDR_PIC : 0;
+		h264.idr_pic_id = idr ? venc.idr_pic_id++ & 0xffff : 0;
+		h264.nal_ref_idc = idr ? 3 : 2;
+		h264.frame_num = venc.frame_num;
+		h264.pic_order_cnt_lsb = venc.poc;
+		c[0] = (struct v4l2_ext_control){ .id = V4L2_CID_STATELESS_H264_ENCODE_PARAMS,
+						  .size = sizeof(h264), .ptr = &h264 };
+		c[1] = (struct v4l2_ext_control){ .id = V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP,
+						  .value = rc.key_qp };
+		c[2] = (struct v4l2_ext_control){ .id = V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP,
+						  .value = rc.qp };
+	} else {
+		if (!idr)
+			venc.poc = (venc.poc + 1) & 0xffff;
+		hevc.slice_type = idr ? V4L2_HEVC_SLICE_TYPE_I : V4L2_HEVC_SLICE_TYPE_P;
+		hevc.flags = idr ? V4L2_HEVC_ENCODE_FLAG_IDR_PIC : 0;
+		hevc.slice_pic_order_cnt_lsb = venc.poc;
+		c[0] = (struct v4l2_ext_control){ .id = V4L2_CID_STATELESS_HEVC_ENCODE_PARAMS,
+						  .size = sizeof(hevc), .ptr = &hevc };
+		c[1] = (struct v4l2_ext_control){ .id = V4L2_CID_MPEG_VIDEO_HEVC_I_FRAME_QP,
+						  .value = rc.key_qp };
+		c[2] = (struct v4l2_ext_control){ .id = V4L2_CID_MPEG_VIDEO_HEVC_P_FRAME_QP,
+						  .value = rc.qp };
+	}
+
+	if (xioctl(venc.fd, VIDIOC_S_EXT_CTRLS, &cs))
+		die("encode params");
+	if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
+		die("QBUF encoder output");
+	if (xioctl(venc.request, MEDIA_REQUEST_IOC_QUEUE, NULL))
+		die("queue encoder request");
+	venc.busy = cbuf->index;
+	venc.request_busy = 1;
+	venc.last = now();
 }
 
 /* Returns whether an access unit was sent. */
-static int h264_send(void)
+static int venc_send(void)
 {
+	const struct codec *codec = &codecs[venc.codec];
 	struct v4l2_plane plane = { 0 };
 	struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 				   .memory = V4L2_MEMORY_MMAP, .m.planes = &plane, .length = 1 };
 	int sent = 0;
 
-	if (xioctl(h264.fd, VIDIOC_DQBUF, &buf))
+	if (xioctl(venc.fd, VIDIOC_DQBUF, &buf))
 		return 0;
 	if (buf.flags & V4L2_BUF_FLAG_ERROR) {
-		logline("H.264 encode error");
-		h264.force_idr = 1;
+		logline("%s encode error", codec->label);
+		venc.force_idr = 1;
 	} else {
 		size_t size = plane.bytesused - plane.data_offset;
 
-		write_packet(buf.flags & V4L2_BUF_FLAG_KEYFRAME ? PKT_KEYFRAME : PKT_FRAME,
-			     (char *)h264.strm[buf.index] + plane.data_offset, size);
+		write_packet(buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe :
+								  codec->pkt_frame,
+			     (char *)venc.strm[buf.index] + plane.data_offset, size);
 		rc_frame(size, buf.flags & V4L2_BUF_FLAG_KEYFRAME);
-		h264_bytes += size;
+		venc_bytes += size;
 		sent = 1;
 	}
-	if (xioctl(h264.fd, VIDIOC_QBUF, &buf))
-		die("QBUF H.264 capture");
+	if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
+		die("QBUF encoder capture");
 	return sent;
 }
 
 /* Kept until the encoder runs: commands can come while waiting for an input. */
-static void h264_command(const char *c, size_t len)
+static void venc_command(const char *c, size_t len)
 {
 	char text[96];
 
-	if (len == 1 && c[0] == '1' && !h264.on) {
-		h264.on = 1;
-		h264.force_idr = 1;
+	if (len == 1 && c[0] == '1' && !venc.on) {
+		venc.on = 1;
+		venc.force_idr = 1;
 	} else if (len == 1 && c[0] == '0') {
-		h264.on = 0;
+		venc.on = 0;
 	} else if (len == 1 && c[0] == 'k') {
-		h264.force_idr = 1;
+		venc.force_idr = 1;
 	} else if (len > 2 && len < sizeof(text) && c[0] == 'e' && c[1] == ' ') {
 		memcpy(text, c + 2, len - 2);
 		text[len - 2] = 0;
 		if (!rc_set(text))
-			logline("H.264: not an encoding: %s", text);
+			logline("not an encoding: %s", text);
 	}
 }
 
-static void h264_commands(void)
+static void venc_commands(void)
 {
 	static char in[256];
 	static size_t have;
@@ -771,7 +885,7 @@ static void h264_commands(void)
 			die("a command too long");
 		if (have < 4 + len)
 			break;
-		h264_command(in + 4, len);
+		venc_command(in + 4, len);
 		memmove(in, in + 4 + len, have - 4 - len);
 		have -= 4 + len;
 	}
@@ -806,7 +920,7 @@ static void wait_for_event(int cap)
 		if (poll(pfd, 2, -1) < 0 && errno != EINTR)
 			die("poll");
 		if (pfd[1].revents & (POLLIN | POLLHUP))
-			h264_commands();
+			venc_commands();
 		if (pfd[0].revents & POLLPRI) {
 			while (!xioctl(cap, VIDIOC_DQEVENT, &ev))
 				;
@@ -868,9 +982,9 @@ int main(int argc, char **argv)
 	int cap, enc, i, quality = 75, seconds = 0, port = 0, enc_busy = -1, run = 0, njpeg;
 	unsigned int fps, bufsize;
 	unsigned long gen = 0, captured = 0;
-	const char *out = NULL, *h264_dev = NULL;
+	const char *out = NULL, *venc_dev = NULL, *encoding;
 	double t0, tstat, tq = 0, lat_sum = 0;
-	unsigned long ncap = 0, nenc = 0, bytes = 0, nstat_enc = 0, nstat_h264 = 0;
+	unsigned long ncap = 0, nenc = 0, bytes = 0, nstat_enc = 0, nstat_venc = 0;
 	pthread_t th;
 
 	if (argc < 4) {
@@ -880,6 +994,10 @@ int main(int argc, char **argv)
 	}
 	signal(SIGPIPE, SIG_IGN);
 	packet_mode = getenv("KVM_PORT") != NULL;
+	/* Before any command: those that come while waiting for an input win. */
+	encoding = getenv("KVM_ENCODING");
+	if (packet_mode && encoding && !rc_set(encoding))
+		logline("not an encoding: %s", encoding);
 	if (!strcmp(argv[3], "-o")) {
 		if (argc < 5)
 			return 2;
@@ -906,7 +1024,7 @@ int main(int argc, char **argv)
 	       cfmt.fmt.pix.bytesperline, cfmt.fmt.pix.sizeimage);
 	bufsize = cfmt.fmt.pix.sizeimage;
 
-	raw = encoder_formats(enc, V4L2_PIX_FMT_JPEG, &cfmt, "JPEG");
+	raw = encoder_formats(enc, V4L2_PIX_FMT_JPEG, &cfmt, NULL, "JPEG");
 	if (raw.fmt.pix_mp.plane_fmt[0].sizeimage > bufsize)
 		bufsize = raw.fmt.pix_mp.plane_fmt[0].sizeimage;
 	ctrl.id = V4L2_CID_JPEG_COMPRESSION_QUALITY;
@@ -915,10 +1033,13 @@ int main(int argc, char **argv)
 		logline("quality: %s", strerror(errno));
 
 	if (packet_mode)
-		h264_dev = getenv("KVM_H264_DEV");
-	if (h264_dev) {
-		h264_open(h264_dev);
-		raw = encoder_formats(h264.fd, V4L2_PIX_FMT_H264_SLICE, &cfmt, "H.264");
+		venc_dev = getenv("KVM_ENCODER_DEV");
+	if (venc_dev) {
+		rc.fps = fps ? fps : 30;
+		venc_open(venc_dev);
+		/* Both codecs take the same raw format. */
+		raw = encoder_formats(venc.fd, codecs[want_codec].fourcc, &cfmt, &want_colour,
+				      codecs[want_codec].label);
 		if (raw.fmt.pix_mp.plane_fmt[0].sizeimage > bufsize)
 			bufsize = raw.fmt.pix_mp.plane_fmt[0].sizeimage;
 	}
@@ -946,9 +1067,9 @@ int main(int argc, char **argv)
 	if (xioctl(enc, VIDIOC_REQBUFS, &req))
 		die("REQBUFS encoder output");
 
-	/* JPEG buffers are sized for the worst case (16.6 MB at 4K): with H.264
-	 * as well, two of them leave room in CMA for its references. */
-	njpeg = h264_dev ? 2 : NJPEG;
+	/* JPEG buffers are sized for the worst case (16.6 MB at 4K): with the
+	 * video encoder as well, two of them leave room in CMA for its references. */
+	njpeg = venc_dev ? 2 : NJPEG;
 	memset(&req, 0, sizeof(req));
 	req.count = njpeg;
 	req.type = jpg_type;
@@ -972,8 +1093,11 @@ int main(int argc, char **argv)
 
 	if (xioctl(enc, VIDIOC_STREAMON, &out_type) || xioctl(enc, VIDIOC_STREAMON, &jpg_type))
 		die("STREAMON encoder");
-	if (h264_dev)
-		h264_start(fps);
+	if (venc_dev) {
+		venc.cfmt = cfmt;
+		venc.fps = fps ? fps : 30;
+		venc_start();
+	}
 	if (xioctl(cap, VIDIOC_STREAMON, &cap_type)) {
 		/* The input changed or went away since select_input(). */
 		if (errno == EPIPE || errno == ENOLINK) {
@@ -1004,8 +1128,8 @@ int main(int argc, char **argv)
 			{ .fd = cap, .events = POLLIN | POLLPRI },
 			{ .fd = enc, .events = POLLIN | POLLOUT },
 			{ .fd = out ? -1 : done_pipe[0], .events = POLLIN },
-			{ .fd = h264.fd, .events = POLLIN | POLLOUT },
-			{ .fd = h264.request_busy ? h264.request : -1, .events = POLLPRI },
+			{ .fd = venc.fd, .events = POLLIN | POLLOUT },
+			{ .fd = venc.request_busy ? venc.request : -1, .events = POLLPRI },
 			{ .fd = packet_mode ? STDIN_FILENO : -1, .events = POLLIN },
 		};
 
@@ -1038,7 +1162,7 @@ int main(int argc, char **argv)
 		}
 
 		if (pfd[3].revents & POLLIN)
-			nstat_h264 += h264_send();
+			nstat_venc += venc_send();
 
 		if (pfd[3].revents & POLLOUT) {
 			struct v4l2_plane plane = { 0 };
@@ -1046,20 +1170,20 @@ int main(int argc, char **argv)
 						    .memory = V4L2_MEMORY_DMABUF,
 						    .m.planes = &plane, .length = 1 };
 
-			if (!xioctl(h264.fd, VIDIOC_DQBUF, &hbuf)) {
+			if (!xioctl(venc.fd, VIDIOC_DQBUF, &hbuf)) {
 				release_cap(cap, hbuf.index);
-				h264.busy = -1;
+				venc.busy = -1;
 			}
 		}
 
 		if (pfd[4].revents & POLLPRI) {
-			if (xioctl(h264.request, MEDIA_REQUEST_IOC_REINIT, NULL))
-				die("reinit H.264 request");
-			h264.request_busy = 0;
+			if (xioctl(venc.request, MEDIA_REQUEST_IOC_REINIT, NULL))
+				die("reinit encoder request");
+			venc.request_busy = 0;
 		}
 
 		if (pfd[5].revents & (POLLIN | POLLHUP))
-			h264_commands();
+			venc_commands();
 
 		if (pfd[1].revents & POLLIN) {
 			struct v4l2_plane plane = { 0 };
@@ -1150,9 +1274,13 @@ int main(int argc, char **argv)
 					tq = now();
 					refs++;
 				}
-				if (h264.on && h264.fd >= 0 && h264.busy < 0 && !h264.request_busy &&
-				    h264_due()) {
-					h264_queue(&buf, dmabuf[buf.index]);
+				if (venc.on && venc.streaming && venc.busy < 0 &&
+				    !venc.request_busy && venc_due()) {
+					if (venc_changed()) {
+						venc_stop();
+						venc_start();
+					}
+					venc_queue(&buf, dmabuf[buf.index]);
 					refs++;
 				}
 				cap_refs[buf.index] = refs;
@@ -1164,12 +1292,12 @@ int main(int argc, char **argv)
 		if (now() - tstat >= 5) {
 			double dt = now() - tstat;
 
-			logline("capture %.1f fps, jpeg %.1f fps, sent %.1f fps, %.0f KB avg, encode+wait %.1f ms, clients %d, h264 %.1f fps %.2f Mbit/s QP %d",
+			logline("capture %.1f fps, jpeg %.1f fps, sent %.1f fps, %.0f KB avg, encode+wait %.1f ms, clients %d, %s %.1f fps %.2f Mbit/s QP %d",
 			       ncap / dt, nstat_enc / dt, __atomic_exchange_n(&nsent, 0, __ATOMIC_RELAXED) / dt,
 			       nstat_enc ? bytes / 1024.0 / nstat_enc : 0,
-			       nstat_enc ? lat_sum * 1000 / nstat_enc : 0, nclients, nstat_h264 / dt,
-			       h264_bytes * 8 / dt / 1e6, rc.qp);
-			ncap = nstat_enc = bytes = nstat_h264 = h264_bytes = 0;
+			       nstat_enc ? lat_sum * 1000 / nstat_enc : 0, nclients,
+			       codecs[venc.codec].name, nstat_venc / dt, venc_bytes * 8 / dt / 1e6, rc.qp);
+			ncap = nstat_enc = bytes = nstat_venc = venc_bytes = 0;
 			lat_sum = 0;
 			tstat = now();
 		}

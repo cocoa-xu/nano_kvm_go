@@ -7,6 +7,8 @@ defmodule NanoKVMGo.Video.ProtocolTest do
     assert Protocol.decode(<<0, "capture 1920x1080">>) == {:log, "capture 1920x1080"}
     assert Protocol.decode(<<1, 0, 0, 0, 1, 0x41>>) == {:h264, :delta, <<0, 0, 0, 1, 0x41>>}
     assert Protocol.decode(<<2, 0, 0, 0, 1, 0x67>>) == {:h264, :key, <<0, 0, 0, 1, 0x67>>}
+    assert Protocol.decode(<<4, 0, 0, 0, 1, 0x02>>) == {:h265, :delta, <<0, 0, 0, 1, 0x02>>}
+    assert Protocol.decode(<<5, 0, 0, 0, 1, 0x40>>) == {:h265, :key, <<0, 0, 0, 1, 0x40>>}
 
     assert Protocol.decode(<<3, "3840x2160@30">>) ==
              {:input, %{width: 3840, height: 2160, fps: 30}}
@@ -26,9 +28,22 @@ defmodule NanoKVMGo.Video.ProtocolTest do
   end
 
   test "encodes commands and knows the input-changed exit" do
-    assert Protocol.command(:h264_start) == "1"
-    assert Protocol.command(:h264_stop) == "0"
+    assert Protocol.command(:start_stream) == "1"
+    assert Protocol.command(:stop_stream) == "0"
     assert Protocol.command(:keyframe) == "k"
+
+    encoding = %{
+      codec: :h265,
+      rate_control: :constant_qp,
+      bitrate: 8_000_000,
+      qp: 30,
+      keyframe_interval: 600,
+      max_fps: 0,
+      color_matrix: :bt601,
+      color_range: :limited
+    }
+
+    assert Protocol.command({:encoding, encoding}) == "e h265 cq 8000000 30 600 0 bt601 limited"
     assert Protocol.input_changed?(3)
     refute Protocol.input_changed?(1)
   end

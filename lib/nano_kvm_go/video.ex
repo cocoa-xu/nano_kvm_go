@@ -8,7 +8,8 @@ defmodule NanoKVMGo.Video do
 
     * to JPEG, which the program serves itself as MJPEG over HTTP:
       `http://<device>:<mjpeg_port>/stream.mjpg`, with a viewer page at `/`
-    * to H.264 (Annex B), sent to the subscribers while there are any
+    * to H.264 or H.265 (Annex B), sent to the subscribers while there are
+      any
 
   When the input changes, the program stops and starts again at the new size;
   subscribers get the new input, then a keyframe.
@@ -24,8 +25,8 @@ defmodule NanoKVMGo.Video do
       Without one the stream and a viewer page are open to anyone who
       reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
-    * `:encoding` - how H.264 is encoded, see `t:encoding/0`: VBR of up to
-      8 Mbit/s at QP 24, a keyframe every 600 frames, by default
+    * `:encoding` - how the stream is encoded, see `t:encoding/0`: H.264,
+      VBR of up to 8 Mbit/s at QP 24, a keyframe every 600 frames, by default
     * `:devices` - the devices to capture and encode with, see
       `t:devices/0`, by default the board's, found by their drivers each
       time the capture starts
@@ -38,8 +39,10 @@ defmodule NanoKVMGo.Video do
 
     * `{NanoKVMGo.Video, {:input, input}}` when subscribing and when the input
       changes, once the capture knows it, see `t:input/0`
-    * `{NanoKVMGo.Video, {:h264, :key | :delta, data}}`, one access unit each,
-      starting with a keyframe. The SPS and PPS come before every keyframe.
+    * `{NanoKVMGo.Video, {codec, :key | :delta, data}}`, one access unit each
+      of the codec, `:h264` or `:h265`, starting with a keyframe. The
+      parameter sets come before every keyframe. When the codec changes, the
+      next access unit is a keyframe of the new one.
 
   A subscriber with more than 30 messages waiting misses the deltas until
   the next keyframe, which is then asked for. One on another node gets them
@@ -60,11 +63,14 @@ defmodule NanoKVMGo.Video do
 
   @restart_delay 2_000
   @default_encoding %{
+    codec: :h264,
     rate_control: :vbr,
     bitrate: 8_000_000,
     qp: 24,
     keyframe_interval: 600,
-    max_fps: 0
+    max_fps: 0,
+    color_matrix: :auto,
+    color_range: :auto
   }
   @input_restart_delay 100
   @max_backlog 30
@@ -80,18 +86,19 @@ defmodule NanoKVMGo.Video do
           | :unsupported
 
   @typedoc """
-  The video devices: the capture's, the JPEG encoder's and, for H.264, the
-  H.264 encoder's.
+  The video devices: the capture's, the JPEG encoder's and, for the stream,
+  the H.264 and H.265 encoder's.
   """
   @type devices() :: %{
           required(:capture) => Path.t(),
           required(:jpeg) => Path.t(),
-          optional(:h264) => Path.t() | nil
+          optional(:encoder) => Path.t() | nil
         }
 
   @typedoc """
-  How H.264 is encoded:
+  How the stream is encoded:
 
+    * `:codec` - `:h264` or `:h265`
     * `:rate_control` - `:constant_qp`, every frame at `:qp`; `:cbr`, at a
       constant `:bitrate`; `:vbr`, at `:qp` unless the bitrate would go over
       `:bitrate`, then at the QP that keeps it
@@ -101,16 +108,27 @@ defmodule NanoKVMGo.Video do
     * `:keyframe_interval` - frames from a keyframe to the next, unless one
       is asked for sooner
     * `:max_fps` - frames a second at most, 0 for as many as the input has
+    * `:color_matrix` - the matrix the stream says turns its samples into
+      RGB, `:bt601` or `:bt709`
+    * `:color_range` - whether the stream says its samples use the `:full`
+      range or the `:limited` one
 
   The bitrate a still picture takes is low whatever the rate control: CBR
   and VBR save no bits for later.
+
+  The colour only labels the samples, as the HDMI bridge hands them over;
+  `:auto` gives what it hands over, BT.709 at full range. Another label
+  shifts the colours a decoder shows.
   """
   @type encoding() :: %{
+          codec: :h264 | :h265,
           rate_control: :constant_qp | :cbr | :vbr,
           bitrate: pos_integer(),
           qp: 0..51,
           keyframe_interval: pos_integer(),
-          max_fps: non_neg_integer()
+          max_fps: non_neg_integer(),
+          color_matrix: :auto | :bt601 | :bt709,
+          color_range: :auto | :full | :limited
         }
 
   @type option() ::
@@ -126,7 +144,7 @@ defmodule NanoKVMGo.Video do
 
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
-          {NanoKVMGo.Video, {:input, input()} | {:h264, :key | :delta, binary()}}
+          {NanoKVMGo.Video, {:input, input()} | {:h264 | :h265, :key | :delta, binary()}}
 
   @doc """
   Starts the capture. See the module documentation for the options.
@@ -155,17 +173,17 @@ defmodule NanoKVMGo.Video do
   end
 
   @doc """
-  How H.264 is encoded, see `t:encoding/0`.
+  How the stream is encoded, see `t:encoding/0`.
   """
   @spec encoding(GenServer.server()) :: encoding()
   def encoding(server \\ __MODULE__), do: GenServer.call(server, :encoding)
 
   @doc """
-  Changes how H.264 is encoded, from the next frame: the keys given, see
+  Changes how the stream is encoded, from the next frame: the keys given, see
   `t:encoding/0`. Returns the encoding, and raises `ArgumentError` for one
   it does not take.
 
-      NanoKVMGo.Video.set_encoding(rate_control: :cbr, bitrate: 3_000_000)
+      NanoKVMGo.Video.set_encoding(codec: :h265, rate_control: :cbr, bitrate: 3_000_000)
   """
   @spec set_encoding(GenServer.server(), keyword() | map()) :: encoding()
   def set_encoding(server \\ __MODULE__, changes) do
@@ -173,8 +191,8 @@ defmodule NanoKVMGo.Video do
   end
 
   @doc """
-  Sends the input and the H.264 stream to the caller until it unsubscribes or
-  exits. Returns `{:error, :no_encoder}` without the H.264 encoder.
+  Sends the input and the stream to the caller until it unsubscribes or
+  exits. Returns `{:error, :no_encoder}` without the H.264 and H.265 encoder.
   """
   @spec subscribe(GenServer.server()) :: :ok | {:error, :no_encoder}
   def subscribe(server \\ __MODULE__), do: GenServer.call(server, :subscribe)
@@ -275,7 +293,7 @@ defmodule NanoKVMGo.Video do
     state = %{
       config: config,
       port: nil,
-      h264?: false,
+      encoder?: false,
       subscribers: %{},
       key_requested?: false,
       input: nil
@@ -290,7 +308,7 @@ defmodule NanoKVMGo.Video do
   def handle_continue(:start, state), do: {:noreply, start_program(state)}
 
   @impl GenServer
-  def handle_call(:subscribe, _from, %{port: port, h264?: false} = state) when port != nil do
+  def handle_call(:subscribe, _from, %{port: port, encoder?: false} = state) when port != nil do
     {:reply, {:error, :no_encoder}, state}
   end
 
@@ -300,7 +318,7 @@ defmodule NanoKVMGo.Video do
         state
       else
         first? = state.subscribers == %{}
-        command(state, if(first?, do: :h264_start, else: :keyframe))
+        command(state, if(first?, do: :start_stream, else: :keyframe))
         subscriber = %{monitor: Process.monitor(pid), synced?: false}
         %{state | subscribers: Map.put(state.subscribers, pid, subscriber), key_requested?: true}
       end
@@ -364,10 +382,10 @@ defmodule NanoKVMGo.Video do
     %{state | input: input}
   end
 
-  defp handle_packet({:h264, kind, au}, state) do
+  defp handle_packet({codec, kind, au}, state) when codec in [:h264, :h265] do
     subscribers =
       Map.new(state.subscribers, fn {pid, subscriber} ->
-        {pid, deliver(pid, subscriber, kind, au)}
+        {pid, deliver(pid, subscriber, {codec, kind, au})}
       end)
 
     waiting? = Enum.any?(subscribers, fn {_pid, subscriber} -> not subscriber.synced? end)
@@ -384,21 +402,21 @@ defmodule NanoKVMGo.Video do
 
   # Keyframes go to everyone; deltas only to subscribers that have the
   # stream's state and keep up.
-  defp deliver(pid, subscriber, :key, au) do
-    send(pid, {__MODULE__, {:h264, :key, au}})
+  defp deliver(pid, subscriber, {_codec, :key, _au} = message) do
+    send(pid, {__MODULE__, message})
     %{subscriber | synced?: true}
   end
 
-  defp deliver(pid, %{synced?: true} = subscriber, :delta, au) do
+  defp deliver(pid, %{synced?: true} = subscriber, message) do
     if backlog(pid) < @max_backlog do
-      send(pid, {__MODULE__, {:h264, :delta, au}})
+      send(pid, {__MODULE__, message})
       subscriber
     else
       %{subscriber | synced?: false}
     end
   end
 
-  defp deliver(_pid, subscriber, :delta, _au), do: subscriber
+  defp deliver(_pid, subscriber, _delta), do: subscriber
 
   # Process.info/2 takes local processes only.
   defp backlog(pid) when node(pid) == node() do
@@ -426,7 +444,7 @@ defmodule NanoKVMGo.Video do
 
       {subscriber, subscribers} ->
         Process.demonitor(subscriber.monitor, [:flush])
-        if subscribers == %{}, do: command(state, :h264_stop)
+        if subscribers == %{}, do: command(state, :stop_stream)
         %{state | subscribers: subscribers}
     end
   end
@@ -442,8 +460,8 @@ defmodule NanoKVMGo.Video do
     case devices(config) do
       {:ok, devices} ->
         port = open_port(config, devices)
-        state = %{state | port: port, h264?: devices.h264 != nil, key_requested?: false}
-        if state.subscribers != %{}, do: command(state, :h264_start)
+        state = %{state | port: port, encoder?: devices.encoder != nil, key_requested?: false}
+        if state.subscribers != %{}, do: command(state, :start_stream)
         state
 
       :error ->
@@ -464,11 +482,11 @@ defmodule NanoKVMGo.Video do
       Integer.to_string(config.jpeg_quality)
     ]
 
-    h264_env =
-      if devices.h264,
+    encoder_env =
+      if devices.encoder,
         do: [
-          {~c"KVM_H264_DEV", String.to_charlist(devices.h264)},
-          {~c"KVM_H264_ENCODING", String.to_charlist(Protocol.encoding(config.encoding))}
+          {~c"KVM_ENCODER_DEV", String.to_charlist(devices.encoder)},
+          {~c"KVM_ENCODING", String.to_charlist(Protocol.encoding(config.encoding))}
         ],
         else: []
 
@@ -477,12 +495,12 @@ defmodule NanoKVMGo.Video do
       {:packet, 4},
       :exit_status,
       args: args,
-      env: [{~c"KVM_PORT", ~c"1"} | h264_env] ++ token_env(config.mjpeg_token)
+      env: [{~c"KVM_PORT", ~c"1"} | encoder_env] ++ token_env(config.mjpeg_token)
     ])
   end
 
   defp command(%{port: nil}, _command), do: :ok
-  defp command(%{h264?: false}, _command), do: :ok
+  defp command(%{encoder?: false}, _command), do: :ok
 
   # Unlike Port.command/2, a message never raises once the program has exited.
   defp command(%{port: port}, command) do
@@ -495,11 +513,11 @@ defmodule NanoKVMGo.Video do
     jpeg = Devices.jpeg()
 
     if capture && jpeg,
-      do: {:ok, %{capture: capture, jpeg: jpeg, h264: Devices.h264()}},
+      do: {:ok, %{capture: capture, jpeg: jpeg, encoder: Devices.encoder()}},
       else: :error
   end
 
-  defp devices(%{devices: devices}), do: {:ok, Map.put_new(devices, :h264, nil)}
+  defp devices(%{devices: devices}), do: {:ok, Map.put_new(devices, :encoder, nil)}
 
   defp read_counter(dir, file) do
     with {:ok, text} <- File.read(Path.join(dir, file)),
@@ -520,6 +538,8 @@ defmodule NanoKVMGo.Video do
     |> then(&Map.merge(encoding, &1))
   end
 
+  defp valid_encoding?(:codec, codec), do: codec in [:h264, :h265]
+
   defp valid_encoding?(:rate_control, rate_control),
     do: rate_control in [:constant_qp, :cbr, :vbr]
 
@@ -527,6 +547,8 @@ defmodule NanoKVMGo.Video do
   defp valid_encoding?(:qp, qp), do: qp in 0..51
   defp valid_encoding?(:keyframe_interval, frames), do: frames in 1..65_535
   defp valid_encoding?(:max_fps, fps), do: fps in 0..1_000
+  defp valid_encoding?(:color_matrix, matrix), do: matrix in [:auto, :bt601, :bt709]
+  defp valid_encoding?(:color_range, range), do: range in [:auto, :full, :limited]
 
   defp capture_device(opts) do
     case Keyword.get_lazy(opts, :device, &Devices.capture/0) do
@@ -556,7 +578,7 @@ defmodule NanoKVMGo.Video do
 
   defp valid?(:devices, %{capture: capture, jpeg: jpeg} = devices)
        when is_binary(capture) and is_binary(jpeg),
-       do: is_binary(devices[:h264]) or is_nil(devices[:h264])
+       do: is_binary(devices[:encoder]) or is_nil(devices[:encoder])
 
   defp valid?(:devices, _devices), do: false
   defp valid?(:device, device), do: is_binary(device)

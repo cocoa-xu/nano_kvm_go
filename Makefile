@@ -50,7 +50,7 @@ $(PREFIX)/nano_kvm_go_playback: $(BUILD)/nano_kvm_go_playback.o
 	@mkdir -p $(PREFIX)
 	$(CC) $(LDFLAGS) -o $@ $^ -lasound -lm
 
-$(BUILD)/%.o: c_src/%.c c_src/v4l2_h264_enc.h c_src/nano_kvm_go_alsa.h Makefile
+$(BUILD)/%.o: c_src/%.c c_src/v4l2_stateless_enc.h c_src/nano_kvm_go_alsa.h Makefile
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

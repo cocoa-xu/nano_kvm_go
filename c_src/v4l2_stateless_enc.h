@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: ((GPL-2.0+ WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
- * The V4L2 H.264 stateless encode uAPI from "media: Add V4L2 H.264 stateless
- * encode and VC8000E support" (not merged upstream yet), for toolchains
- * whose kernel headers predate it. It has to match the running kernel.
+ * The V4L2 stateless encode uAPI of the board's kernel, for toolchains whose
+ * kernel headers predate it: H.264 from "media: Add V4L2 H.264 stateless
+ * encode and VC8000E support" (not merged upstream yet) and the HEVC encode
+ * parameters added next to it. It has to match the running kernel.
  */
-#ifndef V4L2_H264_ENC_H
-#define V4L2_H264_ENC_H
+#ifndef V4L2_STATELESS_ENC_H
+#define V4L2_STATELESS_ENC_H
 
 #include <linux/v4l2-controls.h>
 
@@ -40,6 +41,24 @@ struct v4l2_ctrl_h264_encode_params {
 	__s8 slice_beta_offset_div2;
 	__u8 reserved1[6];
 	__u32 flags;
+};
+#endif
+
+#ifndef V4L2_CID_STATELESS_HEVC_ENCODE_PARAMS
+#define V4L2_HEVC_ENCODE_FLAG_IDR_PIC				0x01
+#define V4L2_HEVC_ENCODE_FLAG_NO_OUTPUT_OF_PRIOR_PICS		0x02
+#define V4L2_HEVC_ENCODE_FLAG_SLICE_SAO_LUMA			0x04
+#define V4L2_HEVC_ENCODE_FLAG_SLICE_SAO_CHROMA			0x08
+#define V4L2_HEVC_ENCODE_FLAG_CABAC_INIT			0x10
+#define V4L2_HEVC_ENCODE_FLAG_SLICE_DEBLOCKING_FILTER_DISABLED	0x20
+
+#define V4L2_CID_STATELESS_HEVC_ENCODE_PARAMS	(V4L2_CID_CODEC_STATELESS_BASE + 410)
+struct v4l2_ctrl_hevc_encode_params {
+	__u8	slice_type;
+	__u8	pic_parameter_set_id;
+	__u16	slice_pic_order_cnt_lsb;
+	__u8	reserved[4];
+	__u64	flags;
 };
 #endif
 

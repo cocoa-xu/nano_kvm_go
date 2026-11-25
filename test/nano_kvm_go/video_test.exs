@@ -7,7 +7,7 @@ defmodule NanoKVMGo.VideoTest do
 
   @moduletag :tmp_dir
 
-  # Stands in for nano_kvm_go_video: reports an input, then answers the H.264
+  # Stands in for nano_kvm_go_video: reports an input, then answers the stream
   # commands ("1" start, "k" keyframe) with {:packet, 4} frames until its
   # stdin ends. Each command comes {:packet, 4} framed too, 5 bytes. The
   # shell's own printf would leave what it failed to write, once the port
@@ -33,9 +33,9 @@ defmodule NanoKVMGo.VideoTest do
   end
 
   # A capture of the fake program, once it runs.
-  defp start_video(tmp_dir) do
-    program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), @fake)
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
+  defp start_video(tmp_dir, fake \\ @fake) do
+    program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), fake)
+    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
     video = start_supervised!({Video, program: program, devices: devices, name: nil})
     Wait.until(fn -> Video.input(video) != nil end)
     {video, program}
@@ -57,9 +57,23 @@ defmodule NanoKVMGo.VideoTest do
     refute_receive {Video, _event}, 100
   end
 
+  test "tells subscribers the codec of each access unit", %{tmp_dir: tmp_dir} do
+    # Packet types 5 and 4: an H.265 keyframe and delta.
+    h265 =
+      @fake
+      |> String.replace("\\002KEY", "\\005KEY")
+      |> String.replace("\\001DEL", "\\004DEL")
+
+    {video, _program} = start_video(tmp_dir, h265)
+    assert :ok = Video.subscribe(video)
+
+    assert_receive {Video, {:h265, :key, "KEY"}}, 1_000
+    assert_receive {Video, {:h265, :delta, "DEL"}}
+  end
+
   test "tells a subscriber the input once it is known", %{tmp_dir: tmp_dir} do
     program = FakeProgram.write!(Path.join(tmp_dir, "quiet_video"), "exec cat > /dev/null\n")
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
+    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
     video = start_supervised!({Video, program: program, devices: devices, name: nil})
     Wait.until(fn -> FakeProgram.running?(program) end)
 
@@ -95,13 +109,13 @@ defmodule NanoKVMGo.VideoTest do
 
     program =
       FakeProgram.write!(Path.join(tmp_dir, "recording_video"), """
-      echo "$KVM_H264_ENCODING" > '#{tmp_dir}/encoding'
+      echo "$KVM_ENCODING" > '#{tmp_dir}/encoding'
       env printf '\\000\\000\\000\\015\\003'
       env printf '1920x1080@60'
       exec cat > '#{commands}'
       """)
 
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", h264: "/dev/null"}
+    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
     encoding = [rate_control: :cbr, bitrate: 3_000_000]
 
     video =
@@ -111,21 +125,32 @@ defmodule NanoKVMGo.VideoTest do
 
     Wait.until(fn -> Video.input(video) != nil end)
 
-    assert File.read!(Path.join(tmp_dir, "encoding")) == "cbr 3000000 24 600 0\n"
+    assert File.read!(Path.join(tmp_dir, "encoding")) == "h264 cbr 3000000 24 600 0 auto auto\n"
 
-    assert Video.encoding(video) ==
-             %{rate_control: :cbr, bitrate: 3_000_000, qp: 24, keyframe_interval: 600, max_fps: 0}
+    assert Video.encoding(video) == %{
+             codec: :h264,
+             rate_control: :cbr,
+             bitrate: 3_000_000,
+             qp: 24,
+             keyframe_interval: 600,
+             max_fps: 0,
+             color_matrix: :auto,
+             color_range: :auto
+           }
 
-    assert %{rate_control: :vbr, bitrate: 3_000_000, max_fps: 30} =
-             Video.set_encoding(video, rate_control: :vbr, max_fps: 30)
+    assert %{codec: :h265, rate_control: :vbr, bitrate: 3_000_000, max_fps: 30} =
+             Video.set_encoding(video, codec: :h265, rate_control: :vbr, max_fps: 30)
 
-    Wait.until(fn -> commands(commands) == ["e vbr 3000000 24 600 30"] end)
+    Wait.until(fn -> commands(commands) == ["e h265 vbr 3000000 24 600 30 auto auto"] end)
 
     for changes <- [
           [qp: 52],
+          [codec: :vp9],
           [rate_control: :abr],
           [bitrate: 0],
           [keyframe_interval: 0],
+          [color_matrix: :bt2020],
+          [color_range: :tv],
           [gop: 30]
         ] do
       assert_raise ArgumentError, fn -> Video.set_encoding(video, changes) end

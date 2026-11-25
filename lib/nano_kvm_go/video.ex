@@ -27,7 +27,10 @@ defmodule NanoKVMGo.Video do
     * `:jpeg_quality` - 1 to 100, 60 by default
     * `:encoding` - how the stream is encoded, see `t:encoding/0`: the
       codec every subscriber decodes, VBR of up to 8 Mbit/s at QP 24, a
-      keyframe every 600 frames, by default
+      keyframe every 600 frames, by default. Or `{module, function, args}`
+      that returns it, called each time the process starts: a restart by
+      its supervisor then takes the encoding saved last, a user's settings
+      say
     * `:devices` - the devices to capture and encode with, see
       `t:devices/0`, by default the board's, found by their drivers each
       time the capture starts
@@ -138,7 +141,7 @@ defmodule NanoKVMGo.Video do
           | {:mjpeg_port, :inet.port_number()}
           | {:mjpeg_token, String.t() | nil}
           | {:jpeg_quality, 1..100}
-          | {:encoding, keyword() | map()}
+          | {:encoding, keyword() | map() | {module(), atom(), [term()]}}
           | {:devices, devices() | nil}
           | {:program, Path.t()}
 
@@ -173,7 +176,7 @@ defmodule NanoKVMGo.Video do
 
     {name, opts} = Keyword.pop!(opts, :name)
     {encoding, opts} = Keyword.pop!(opts, :encoding)
-    config = opts |> Map.new() |> Map.put(:encoding, encoding!(@default_encoding, encoding))
+    config = opts |> Map.new() |> Map.put(:encoding, checked_encoding(encoding))
     GenServer.start_link(__MODULE__, config, name: name)
   end
 
@@ -313,7 +316,7 @@ defmodule NanoKVMGo.Video do
   @impl GenServer
   def init(config) do
     state = %{
-      config: config,
+      config: %{config | encoding: initial_encoding(config.encoding)},
       port: nil,
       encoder?: false,
       subscribers: %{},
@@ -585,6 +588,15 @@ defmodule NanoKVMGo.Video do
 
   defp edid_program, do: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_edid")
 
+  # One a function returns is checked as the process starts.
+  defp checked_encoding({_module, _function, _args} = source), do: source
+  defp checked_encoding(encoding), do: encoding!(@default_encoding, encoding)
+
+  defp initial_encoding({module, function, args}),
+    do: encoding!(@default_encoding, apply(module, function, args))
+
+  defp initial_encoding(encoding), do: encoding
+
   defp encoding!(encoding, changes) do
     changes
     |> Enum.to_list()
@@ -631,6 +643,10 @@ defmodule NanoKVMGo.Video do
   defp valid?(:mjpeg_token, nil), do: true
   defp valid?(:mjpeg_token, token), do: is_binary(token) and token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/
   defp valid?(:jpeg_quality, quality), do: quality in 1..100
+
+  defp valid?(:encoding, {module, function, args}),
+    do: is_atom(module) and is_atom(function) and is_list(args)
+
   defp valid?(:encoding, encoding), do: is_list(encoding) or is_map(encoding)
   defp valid?(:devices, nil), do: true
 

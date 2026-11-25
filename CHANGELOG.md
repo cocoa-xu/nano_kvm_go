@@ -13,6 +13,9 @@
   hands the samples over, instead of nothing, which decoders took for
   limited range. The encoding's `:color_matrix` and `:color_range` label
   them otherwise
+* `NanoKVMGo.Video` takes its `:encoding` from a `{module, function, args}`
+  too, called each time the process starts: a restart by its supervisor
+  takes the encoding saved last
 * H.264 rate control in `NanoKVMGo.Video`: the `:encoding` option, and
   `set_encoding/2`, which changes it while the capture runs. A constant QP,
   a constant bitrate, or VBR: a QP, with a higher one where the bitrate

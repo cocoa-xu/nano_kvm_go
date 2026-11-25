@@ -141,6 +141,24 @@ defmodule NanoKVMGo.VideoTest do
     assert Video.input(video) == input
   end
 
+  test "takes the encoding a function returns each time it starts", %{tmp_dir: tmp_dir} do
+    saved = start_supervised!({Agent, fn -> [rate_control: :cbr, bitrate: 3_000_000] end})
+
+    {video, _program} =
+      start_video(tmp_dir,
+        fake: ~s(event "encoding $KVM_ENCODING"\n) <> @fake,
+        encoding: {Agent, :get, [saved, & &1]}
+      )
+
+    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 600 0 auto auto"}
+
+    Agent.update(saved, fn _encoding -> [rate_control: :constant_qp, qp: 30] end)
+    Process.exit(video, :kill)
+
+    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "encoding h264 cq 8000000 30 600 0 auto auto"}
+  end
+
   test "encodes as asked, from the start and while it runs", %{tmp_dir: tmp_dir} do
     {video, _program} =
       start_video(tmp_dir,

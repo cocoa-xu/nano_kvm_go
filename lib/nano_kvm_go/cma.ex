@@ -131,11 +131,12 @@ defmodule NanoKVMGo.CMA do
     kv = opts[:kv]
     persisted = persisted_sizes(kv: kv)
     new = Map.merge(persisted, sizes)
-    max = max_mb(opts[:root])
+    dram = dram_mb(device_tree(opts[:root]))
+    max = dram && dram - @linux_min
 
     with :ok <- check_size(:video, new.video, @align, max),
          :ok <- check_size(:npu, new.npu, 0, max),
-         :ok <- check_total(new, max) do
+         :ok <- check_total(new, dram, max) do
       kv.put(variables(new, persisted, opts[:trial]))
     end
   end
@@ -222,22 +223,26 @@ defmodule NanoKVMGo.CMA do
   defp check_size(pool, mb, _min, _max), do: {:error, {:invalid_size, pool, mb}}
 
   # U-Boot takes the board's sizes when both together leave Linux too
-  # little. With a default size the total is up to U-Boot.
-  defp check_total(%{video: video, npu: npu}, max)
-       when is_integer(video) and is_integer(npu) and is_integer(max) and video + npu > max,
-       do: {:error, {:too_large, video + npu, max}}
+  # little, a default size counting as the board's.
+  defp check_total(_sizes, nil, nil), do: :ok
 
-  defp check_total(_sizes, _max), do: :ok
+  defp check_total(sizes, dram, max) do
+    defaults = board_sizes(dram)
+
+    total =
+      Enum.sum(
+        for {pool, size} <- sizes, do: if(size == :default, do: defaults[pool], else: size)
+      )
+
+    if total > max, do: {:error, {:too_large, total, max}}, else: :ok
+  end
+
+  # As the NanoKVM-Go system's U-Boot sizes them: the Go+'s device tree, and
+  # on the Go 144 MiB for video and the NPU off.
+  defp board_sizes(dram) when dram >= 512, do: %{video: 192, npu: 64}
+  defp board_sizes(_dram), do: %{video: 144, npu: 0}
 
   defp device_tree(root), do: Path.join(root, "proc/device-tree")
-
-  # What the pools may take together, as U-Boot has it: all but 96 MiB.
-  defp max_mb(root) do
-    case dram_mb(device_tree(root)) do
-      nil -> nil
-      dram -> dram - @linux_min
-    end
-  end
 
   defp reserved_memory(dt) do
     dt

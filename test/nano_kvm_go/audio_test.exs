@@ -2,7 +2,7 @@ defmodule NanoKVMGo.AudioTest do
   # One fake program at a time, as in NanoKVMGo.VideoTest.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.{Audio, FakeProgram, Peer, Wait}
+  alias NanoKVMGo.{Audio, FakeProgram, Peer}
   alias NanoKVMGo.Audio.Protocol
 
   @moduletag :tmp_dir
@@ -14,7 +14,7 @@ defmodule NanoKVMGo.AudioTest do
   printf '\\000\\000\\000\\010\\002'
   if [ "$5" = /dev/video7 ]; then printf '44100 2'; else printf '48000 2'; fi
   printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
-  exec cat > /dev/null
+  cat > /dev/null
   """
 
   setup %{tmp_dir: tmp_dir} do
@@ -36,10 +36,10 @@ defmodule NanoKVMGo.AudioTest do
 
     assert :ok = Audio.unsubscribe(audio)
     assert Audio.format(audio) == nil
-    Wait.until(fn -> not FakeProgram.running?(program) end)
+    assert_receive {FakeProgram, "exit"}
   end
 
-  test "a subscriber that goes away stops the capture", %{audio: audio, program: program} do
+  test "a subscriber that goes away stops the capture", %{audio: audio} do
     test = self()
 
     subscriber =
@@ -53,17 +53,19 @@ defmodule NanoKVMGo.AudioTest do
       end)
 
     assert_receive :subscribed
-    Wait.until(fn -> FakeProgram.running?(program) end)
+    assert_receive {FakeProgram, "start"}, 1_000
 
     send(subscriber, :leave)
-    Wait.until(fn -> not FakeProgram.running?(program) end)
+    assert_receive {FakeProgram, "exit"}
   end
 
   test "sends to a subscriber on another node", %{audio: audio} do
-    subscriber = Peer.spawn_caller(audio, :subscribe)
+    Peer.spawn_caller("NanoKVMGo.Audio.subscribe(server)", server: audio)
 
-    # The format and two periods.
-    Wait.until(fn -> Peer.message_queue_len(subscriber) == 3 end)
+    # The format and two periods. The peer takes a while to start.
+    assert_receive {Peer, {Audio, {:format, :hdmi, %{rate: 48_000, channels: 2}}}}, 10_000
+    assert_receive {Peer, {Audio, {:pcm, :hdmi, "ABCD"}}}
+    assert_receive {Peer, {Audio, {:pcm, :hdmi, "EFGH"}}}
     assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
   end
 
@@ -80,27 +82,19 @@ defmodule NanoKVMGo.AudioTest do
   @tag :capture_log
   test "stops a capture whose program exits as the last subscriber leaves",
        %{tmp_dir: tmp_dir} do
-    program = FakeProgram.write!(Path.join(tmp_dir, "quiet_audio"), "exec cat > /dev/null\n")
+    program = FakeProgram.write!(Path.join(tmp_dir, "quiet_audio"), "cat > /dev/null\n")
     audio = start_supervised!({Audio, program: program, name: nil}, id: :quiet)
-    test = self()
 
-    subscriber =
-      spawn(fn ->
-        :ok = Audio.subscribe(audio)
-        send(test, :subscribed)
-        receive do: (:leave -> :ok)
-      end)
-
-    assert_receive :subscribed
-    Wait.until(fn -> FakeProgram.running?(program) end)
+    assert :ok = Audio.subscribe(audio)
+    assert_receive {FakeProgram, "start"}, 1_000
     port = FakeProgram.port(audio)
+    ref = Port.monitor(port)
 
-    :ok = :sys.suspend(audio)
-    send(subscriber, :leave)
-    Wait.until(fn -> Process.info(audio, :message_queue_len) == {:message_queue_len, 1} end)
+    # The program dies; the last subscriber leaves before the capture hears
+    # of it, or after.
     FakeProgram.kill(program)
-    Wait.until(fn -> Port.info(port) == nil end)
-    :ok = :sys.resume(audio)
+    assert_receive {:DOWN, ^ref, :port, ^port, _reason}
+    assert :ok = Audio.unsubscribe(audio)
 
     assert Audio.format(audio) == nil
   end
@@ -110,7 +104,7 @@ defmodule NanoKVMGo.AudioTest do
       FakeProgram.write!(Path.join(tmp_dir, "fake_usb_audio"), """
       printf '\\000\\000\\000\\010\\002'
       if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then printf '32000 2'; else printf '48000 2'; fi
-      exec cat > /dev/null
+      cat > /dev/null
       """)
 
     audio = start_supervised!({Audio, program: program, source: :usb, name: nil}, id: :usb)

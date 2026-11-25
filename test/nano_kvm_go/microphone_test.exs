@@ -2,43 +2,52 @@ defmodule NanoKVMGo.MicrophoneTest do
   # One fake program at a time, as in NanoKVMGo.AudioTest.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.{FakeProgram, Microphone, Wait}
+  alias NanoKVMGo.{FakeProgram, Microphone}
 
   @moduletag :tmp_dir
 
-  # Stands in for nano_kvm_go_playback: reports a format, keeps its arguments
-  # and what it is sent.
+  # Stands in for nano_kvm_go_playback: reports its arguments and a format,
+  # then each chunk it is sent, in hex, as events.
   defp fake_program(tmp_dir) do
-    received = Path.join(tmp_dir, "received")
-
-    program =
-      FakeProgram.write!(Path.join(tmp_dir, "fake_playback"), """
-      echo "$@" > #{tmp_dir}/args
-      printf '\\000\\000\\000\\020\\002'
-      printf '44100 1 S24_3LE'
-      exec cat > #{received}
-      """)
-
-    {program, received}
+    FakeProgram.write!(Path.join(tmp_dir, "fake_playback"), """
+    event "args $*"
+    printf '\\000\\000\\000\\020\\002'
+    printf '44100 1 S24_3LE'
+    while chunk=$(dd bs=4096 count=1 2>/dev/null | od -An -tx1 -v | tr -d ' \\n') &&
+          [ -n "$chunk" ]; do
+      event "received $chunk"
+    done
+    """)
   end
 
+  # What the program was sent, once it has the bytes of `size`.
+  defp received(size, bytes \\ "")
+
+  defp received(size, bytes) when byte_size(bytes) < size do
+    receive do
+      {FakeProgram, "received " <> hex} ->
+        received(size, bytes <> Base.decode16!(hex, case: :lower))
+    after
+      1_000 -> flunk("the program got #{inspect(bytes)}")
+    end
+  end
+
+  defp received(_size, bytes), do: bytes
+
   test "plays what it is sent through the program", %{tmp_dir: tmp_dir} do
-    {program, received} = fake_program(tmp_dir)
+    program = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, name: nil})
 
     assert FakeProgram.runs(program) == []
     :ok = Microphone.play(mic, <<1, 0, 2, 0>>)
     :ok = Microphone.play(mic, <<3, 0>>)
 
-    Wait.until(fn ->
-      File.read(received) == {:ok, <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>}
-    end)
-
-    assert File.read!(Path.join(tmp_dir, "args")) == "hw:CARD=UAC2Gadget,DEV=0 20\n"
+    assert_receive {FakeProgram, "args hw:CARD=UAC2Gadget,DEV=0 20"}, 1_000
+    assert received(14) == <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>
   end
 
   test "tells subscribers the format", %{tmp_dir: tmp_dir} do
-    {program, _received} = fake_program(tmp_dir)
+    program = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
 
     assert Microphone.format(mic) == nil
@@ -50,33 +59,35 @@ defmodule NanoKVMGo.MicrophoneTest do
 
     # Subscribers keep the stream past the idle time of samples.
     :ok = Microphone.play(mic, <<0, 0, 0>>)
-    Process.sleep(200)
-    assert FakeProgram.running?(program)
+    refute_receive {FakeProgram, "exit"}, 200
 
     assert :ok = Microphone.unsubscribe(mic)
-    Wait.until(fn -> not FakeProgram.running?(program) end)
+    assert_receive {FakeProgram, "exit"}
   end
 
   test "stops the program after a while without samples", %{tmp_dir: tmp_dir} do
-    {program, _received} = fake_program(tmp_dir)
+    program = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
-
     :ok = Microphone.play(mic, <<0, 0>>)
-    Wait.until(fn -> FakeProgram.runs(program) != [] and not FakeProgram.running?(program) end)
+
+    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "exit"}, 1_000
   end
 
   @tag :capture_log
   test "takes samples that come as the program exits", %{tmp_dir: tmp_dir} do
-    {program, _received} = fake_program(tmp_dir)
+    program = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, name: nil})
     :ok = Microphone.play(mic, <<0, 0>>)
-    Wait.until(fn -> FakeProgram.running?(program) end)
+    assert_receive {FakeProgram, "start"}, 1_000
     port = FakeProgram.port(mic)
+    ref = Port.monitor(port)
 
+    # The samples wait in the queue while the program dies.
     :ok = :sys.suspend(mic)
     :ok = Microphone.play(mic, <<1, 0>>)
     FakeProgram.kill(program)
-    Wait.until(fn -> Port.info(port) == nil end)
+    assert_receive {:DOWN, ^ref, :port, ^port, _reason}
     :ok = :sys.resume(mic)
 
     assert Microphone.format(mic) == nil

@@ -2,32 +2,37 @@ defmodule NanoKVMGo.Peer do
   @moduledoc false
   # Processes on another node, for the tests of subscribers there: the test
   # node turns distributed, with an epmd on the loopback interface if none
-  # runs, and a peer node runs Elixir.
+  # runs, and a peer node runs Elixir with this library.
 
   import ExUnit.Callbacks, only: [on_exit: 1]
 
-  # A process on another node that calls `server` with `request`, then
-  # keeps what it is sent.
-  @spec spawn_caller(GenServer.server(), term()) :: pid()
-  def spawn_caller(server, request) do
+  # A process on another node that evaluates `expression` with `binding`,
+  # then sends what it receives to the caller as {NanoKVMGo.Peer, message}.
+  @spec spawn_caller(String.t(), keyword()) :: pid()
+  def spawn_caller(expression, binding) do
     node = start_peer()
     {:ok, _apps} = :erpc.call(node, :application, :ensure_all_started, [:elixir])
 
     {pid, _binding} =
       :erpc.call(node, Code, :eval_string, [
-        "spawn(fn -> GenServer.call(server, request); Process.sleep(:infinity) end)",
-        [server: server, request: request]
+        """
+        forward = fn forward ->
+          receive do
+            message ->
+              send(test, {NanoKVMGo.Peer, message})
+              forward.(forward)
+          end
+        end
+
+        spawn(fn ->
+          #{expression}
+          forward.(forward)
+        end)
+        """,
+        [{:test, self()} | binding]
       ])
 
     pid
-  end
-
-  @spec message_queue_len(pid()) :: non_neg_integer()
-  def message_queue_len(pid) do
-    {:message_queue_len, length} =
-      :erpc.call(node(pid), Process, :info, [pid, :message_queue_len])
-
-    length
   end
 
   defp start_peer do
@@ -42,7 +47,14 @@ defmodule NanoKVMGo.Peer do
         name: :peer.random_name(),
         host: ~c"127.0.0.1",
         longnames: true,
-        args: [~c"-start_epmd", ~c"false", ~c"-pa", :code.lib_dir(:elixir) ++ ~c"/ebin"]
+        args: [
+          ~c"-start_epmd",
+          ~c"false",
+          ~c"-pa",
+          :code.lib_dir(:elixir) ++ ~c"/ebin",
+          ~c"-pa",
+          :code.lib_dir(:nano_kvm_go) ++ ~c"/ebin"
+        ]
       })
 
     node

@@ -61,15 +61,15 @@ defmodule NanoKVMGo.MetricsTest do
   test "CPU, memory, temperature, traffic, load and uptime", %{tmp_dir: root} do
     counters(root, [100, 0, 50, 800, 50, 0, 0, 0], 600, %{"wlan0" => {0, 0}})
     thermal(root, 71_257)
-    started = System.monotonic_time(:millisecond)
-    pid = start(root)
+    clock = :atomics.new(1, signed: true)
+    pid = start(root, clock: fn -> :atomics.get(clock, 1) end)
     assert Metrics.current(pid) == nil
 
-    # 150 of 400 ticks busy since; 200 kB more in use; 2 MB down, 0.5 MB up.
+    # A second later: 150 of 400 ticks busy since; 200 kB more in use; 2 MB
+    # down, 0.5 MB up.
     counters(root, [200, 0, 100, 1050, 50, 0, 0, 0], 400, %{"wlan0" => {2_000_000, 500_000}})
-    Process.sleep(200)
+    :atomics.put(clock, 1, 1_000)
     sample = sample(pid)
-    seconds = (System.monotonic_time(:millisecond) - started) / 1000
 
     assert_in_delta sample.cpu.total, 37.5, 0.01
     assert [core] = sample.cpu.cores
@@ -79,10 +79,7 @@ defmodule NanoKVMGo.MetricsTest do
     assert sample.load == [0.52, 0.30, 0.12]
     assert sample.uptime == 33_432
 
-    # Measured over at least the 200 ms slept, and at most since the start.
-    %{"wlan0" => wlan0} = sample.network
-    assert wlan0.down <= 2_000_000 / 0.2 and wlan0.down >= 2_000_000 / seconds
-    assert wlan0.up <= 500_000 / 0.2 and wlan0.up >= 500_000 / seconds
+    assert %{"wlan0" => %{down: 2_000_000.0, up: 500_000.0} = wlan0} = sample.network
 
     assert %{cpu: [cpu], memory: [60.0], temperature: [71.257], network: %{"wlan0" => history}} =
              Metrics.history(pid)

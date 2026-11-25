@@ -35,6 +35,8 @@ defmodule NanoKVMGo.Metrics do
     * `:history` - how many samples to keep, 300 by default
     * `:root` - the root of the file system with procfs and sysfs, `"/"` by
       default
+    * `:clock` - a function that gives the time in milliseconds, which the
+      traffic is measured against, the monotonic time by default
   """
   use GenServer
 
@@ -70,6 +72,7 @@ defmodule NanoKVMGo.Metrics do
           | {:interval, pos_integer()}
           | {:history, pos_integer()}
           | {:root, Path.t()}
+          | {:clock, (-> integer())}
 
   @doc """
   Starts the process. See the module documentation for the options.
@@ -79,7 +82,7 @@ defmodule NanoKVMGo.Metrics do
     opts =
       Options.validate!(
         opts,
-        [name: __MODULE__, interval: 1_000, history: 300, root: "/"],
+        [name: __MODULE__, interval: 1_000, history: 300, root: "/", clock: &monotonic_ms/0],
         &valid?/2
       )
 
@@ -116,6 +119,7 @@ defmodule NanoKVMGo.Metrics do
   def init(config) do
     state = %{
       root: config.root,
+      clock: config.clock,
       interval: config.interval,
       keep: config.history,
       reading: nil,
@@ -181,14 +185,14 @@ defmodule NanoKVMGo.Metrics do
   defp take_sample(state) do
     _ref = Process.send_after(self(), :sample, state.interval)
 
-    case {state.reading, read(state.root)} do
+    case {state.reading, read(state.root, state.clock)} do
       {_last, :error} -> state
       {nil, {:ok, reading}} -> %{state | reading: reading}
       {last, {:ok, reading}} -> publish(%{state | reading: reading}, sample(last, reading))
     end
   end
 
-  defp read(root) do
+  defp read(root, clock) do
     proc = Path.join(root, "proc")
 
     with {:ok, stat} <- File.read(Path.join(proc, "stat")),
@@ -197,7 +201,7 @@ defmodule NanoKVMGo.Metrics do
          {:ok, net_dev} <- File.read(Path.join(proc, "net/dev")) do
       {:ok,
        %{
-         at: System.monotonic_time(:millisecond),
+         at: clock.(),
          cpu: cpu,
          memory: parse_meminfo(meminfo),
          network: parse_net_dev(net_dev),
@@ -333,4 +337,7 @@ defmodule NanoKVMGo.Metrics do
   defp valid?(:interval, interval), do: is_integer(interval) and interval > 0
   defp valid?(:history, history), do: is_integer(history) and history > 0
   defp valid?(:root, root), do: is_binary(root)
+  defp valid?(:clock, clock), do: is_function(clock, 0)
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 end

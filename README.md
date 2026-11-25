@@ -80,13 +80,13 @@ Supervisor.start_link(children, strategy: :one_for_one)
 NanoKVMGo.Video.input()
 #=> %{width: 1920, height: 1080, fps: 60}
 
-:ok = NanoKVMGo.Video.subscribe()
+:ok = NanoKVMGo.Video.subscribe(NanoKVMGo.Video, codecs: [:h264, :h265])
 
 receive do
-  {NanoKVMGo.Video, {:h264, :key, access_unit}} -> access_unit
+  {NanoKVMGo.Video, {:h265, :key, access_unit}} -> access_unit
 end
 
-NanoKVMGo.Video.set_encoding(codec: :h265, rate_control: :cbr, bitrate: 3_000_000)
+NanoKVMGo.Video.set_encoding(rate_control: :cbr, bitrate: 3_000_000)
 ```
 
 The MJPEG stream is at `http://<device>:8088/stream.mjpg`.

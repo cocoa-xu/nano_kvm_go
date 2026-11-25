@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-* H.265 from `NanoKVMGo.Video` as well as H.264: the encoding's `:codec`.
-  A subscriber's messages are `{NanoKVMGo.Video, {codec, :key | :delta,
-  data}}`, the codec `:h264` or `:h265`; when it changes, the next access
-  unit is a keyframe of the new codec. The encoder device is `:encoder` in
-  `:devices`, instead of `:h264`
+* H.265 from `NanoKVMGo.Video` as well as H.264: the encoding's `:codec`,
+  `:auto` by default, takes H.265 while every subscriber decodes it.
+  `subscribe/2` takes the codecs the caller decodes, `[:h264]` by default,
+  and `codec/1` tells the stream's. A subscriber's messages are
+  `{NanoKVMGo.Video, {codec, :key | :delta, data}}`; when the codec
+  changes, the next access unit is a keyframe of the new one. The encoder
+  device is `:encoder` in `:devices`, instead of `:h264`
 * The stream declares its colour: BT.709 at full range, as the HDMI bridge
   hands the samples over, instead of nothing, which decoders took for
   limited range. The encoding's `:color_matrix` and `:color_range` label
@@ -18,6 +20,8 @@
   to 8 Mbit/s at QP 24 by default, instead of a constant QP of 30; the
   `:h264_qp` option is gone
 * Needs Elixir 1.20, the version it is tested with
+* `NanoKVMGo.Metrics` takes the clock it measures the traffic against,
+  `:clock`
 * `NanoKVMGo.Video` and `NanoKVMGo.Microphone` carry on when a keyframe
   request or samples come as their program exits, instead of crashing
 * `NanoKVMGo.Display.show/2` keeps the framebuffer open after a picture of

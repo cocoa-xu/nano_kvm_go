@@ -39,8 +39,7 @@ defmodule NanoKVMGo.VideoTest do
     {fake, opts} = Keyword.pop(opts, :fake, @fake)
     program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), fake)
     video = start_supervised!({Video, [program: program, devices: @devices, name: nil] ++ opts})
-    # The first program of a run can take a while to start.
-    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "start"}
     {video, program}
   end
 
@@ -57,9 +56,14 @@ defmodule NanoKVMGo.VideoTest do
 
     assert :ok = Video.unsubscribe(video)
     assert_receive {FakeProgram, "command 0"}
+
+    # A keyframe asked for now reaches no one. Traced, to know when it comes;
+    # a call made then is handled after it.
+    :erlang.trace(video, true, [:receive])
     Video.request_keyframe(video)
-    assert_receive {FakeProgram, "command k"}
-    refute_receive {Video, _message}
+    assert_receive {:trace, ^video, :receive, {_port, {:data, <<2, "KEY">>}}}
+    _codec = Video.codec(video)
+    refute_received {Video, _message}
   end
 
   test "tells subscribers the codec of each access unit", %{tmp_dir: tmp_dir} do
@@ -155,7 +159,7 @@ defmodule NanoKVMGo.VideoTest do
     Agent.update(saved, fn _encoding -> [rate_control: :constant_qp, qp: 30] end)
     Process.exit(video, :kill)
 
-    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "start"}
     assert_receive {FakeProgram, "encoding h264 cq 8000000 30 600 0 auto auto"}
   end
 

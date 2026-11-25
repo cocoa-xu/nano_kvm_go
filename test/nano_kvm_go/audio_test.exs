@@ -11,9 +11,9 @@ defmodule NanoKVMGo.AudioTest do
   # video device of the test, sends two periods of PCM, then waits for the
   # end of its stdin.
   @fake """
-  printf '\\000\\000\\000\\010\\002'
-  if [ "$5" = /dev/video7 ]; then printf '44100 2'; else printf '48000 2'; fi
-  printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
+  env printf '\\000\\000\\000\\010\\002'
+  if [ "$5" = /dev/video7 ]; then env printf '44100 2'; else env printf '48000 2'; fi
+  env printf '\\000\\000\\000\\005\\001ABCD\\000\\000\\000\\005\\001EFGH'
   cat > /dev/null
   """
 
@@ -29,7 +29,7 @@ defmodule NanoKVMGo.AudioTest do
     assert :ok = Audio.subscribe(audio)
 
     # The first program of a run can take a while to start.
-    assert_receive {Audio, {:format, :hdmi, %{rate: 48_000, channels: 2}}}, 1_000
+    assert_receive {Audio, {:format, :hdmi, %{rate: 48_000, channels: 2}}}
     assert_receive {Audio, {:pcm, :hdmi, "ABCD"}}
     assert_receive {Audio, {:pcm, :hdmi, "EFGH"}}
     assert Audio.format(audio) == %{rate: 48_000, channels: 2, sample_format: :s16_le}
@@ -53,7 +53,7 @@ defmodule NanoKVMGo.AudioTest do
       end)
 
     assert_receive :subscribed
-    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "start"}
 
     send(subscriber, :leave)
     assert_receive {FakeProgram, "exit"}
@@ -76,7 +76,7 @@ defmodule NanoKVMGo.AudioTest do
       )
 
     assert :ok = Audio.subscribe(audio)
-    assert_receive {Audio, {:format, :hdmi, %{rate: 44_100, channels: 2}}}, 1_000
+    assert_receive {Audio, {:format, :hdmi, %{rate: 44_100, channels: 2}}}
   end
 
   @tag :capture_log
@@ -86,7 +86,7 @@ defmodule NanoKVMGo.AudioTest do
     audio = start_supervised!({Audio, program: program, name: nil}, id: :quiet)
 
     assert :ok = Audio.subscribe(audio)
-    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "start"}
     port = FakeProgram.port(audio)
     ref = Port.monitor(port)
 
@@ -102,15 +102,15 @@ defmodule NanoKVMGo.AudioTest do
   test "captures the USB speaker with source: :usb", %{tmp_dir: tmp_dir} do
     program =
       FakeProgram.write!(Path.join(tmp_dir, "fake_usb_audio"), """
-      printf '\\000\\000\\000\\010\\002'
-      if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then printf '32000 2'; else printf '48000 2'; fi
+      env printf '\\000\\000\\000\\010\\002'
+      if [ "$1 $#" = "hw:CARD=UAC2Gadget,DEV=0 4" ]; then env printf '32000 2'; else env printf '48000 2'; fi
       cat > /dev/null
       """)
 
     audio = start_supervised!({Audio, program: program, source: :usb, name: nil}, id: :usb)
 
     assert :ok = Audio.subscribe(audio)
-    assert_receive {Audio, {:format, :usb, %{rate: 32_000, channels: 2}}}, 1_000
+    assert_receive {Audio, {:format, :usb, %{rate: 32_000, channels: 2}}}
   end
 
   test "processes for both sources fit in one supervisor", %{program: program} do

@@ -31,9 +31,10 @@ defmodule NanoKVMGo.ButtonTest do
         events([{1, 148, 1}, {0, 0, 0}, {1, 148, 2}, {1, 30, 1}]) <> events([{1, 148, 0}])
       )
 
-    assert_receive {Button, :down}, 1_000
-    assert_receive {Button, :up}, 1_000
-    refute_receive {Button, _}, 100
+    # The last event: what the others gave came before it.
+    assert_receive {Button, :down}
+    assert_receive {Button, :up}
+    refute_received {Button, _}
 
     :ok = stop_supervised(Button)
     File.close(fifo)

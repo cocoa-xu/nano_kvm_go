@@ -31,10 +31,11 @@ defmodule NanoKVMGo.TouchTest do
         touch(10, 20, 1) <> touch(10, 20, 1) <> touch(15, 25, 1) <> touch(15, 25, 0)
       )
 
-    assert_receive {Touch, {:down, 10, 20}}, 1_000
-    assert_receive {Touch, {:move, 15, 25}}, 1_000
-    assert_receive {Touch, {:up, 15, 25}}, 1_000
-    refute_receive {Touch, _}, 100
+    # The last event: what the others gave came before it.
+    assert_receive {Touch, {:down, 10, 20}}
+    assert_receive {Touch, {:move, 15, 25}}
+    assert_receive {Touch, {:up, 15, 25}}
+    refute_received {Touch, _}
 
     :ok = stop_supervised(Touch)
     File.close(fifo)

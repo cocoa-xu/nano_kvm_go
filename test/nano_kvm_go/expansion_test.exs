@@ -180,9 +180,11 @@ defmodule NanoKVMGo.ExpansionTest do
     assert_received {FakeGPIO, {:open, "EXPANSION1", :input}}
     assert_received {FakeGPIO, {:set_interrupts, "EXPANSION1", :both}}
 
+    # The call after the interrupt is handled after it.
     assert :ok = Expansion.unsubscribe(pid)
     send(pid, {:circuits_gpio, "EXPANSION1", 223_456, 1})
-    refute_receive {Expansion, _}, 50
+    assert {:ok, _info} = Expansion.info(pid)
+    refute_received {Expansion, _}
   end
 
   test "carries on when a subscriber exits", %{opts: opts} do

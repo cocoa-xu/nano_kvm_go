@@ -11,8 +11,8 @@ defmodule NanoKVMGo.MicrophoneTest do
   defp fake_program(tmp_dir) do
     FakeProgram.write!(Path.join(tmp_dir, "fake_playback"), """
     event "args $*"
-    printf '\\000\\000\\000\\020\\002'
-    printf '44100 1 S24_3LE'
+    env printf '\\000\\000\\000\\020\\002'
+    env printf '44100 1 S24_3LE'
     while chunk=$(dd bs=4096 count=1 2>/dev/null | od -An -tx1 -v | tr -d ' \\n') &&
           [ -n "$chunk" ]; do
       event "received $chunk"
@@ -28,7 +28,8 @@ defmodule NanoKVMGo.MicrophoneTest do
       {FakeProgram, "received " <> hex} ->
         received(size, bytes <> Base.decode16!(hex, case: :lower))
     after
-      1_000 -> flunk("the program got #{inspect(bytes)}")
+      ExUnit.configuration()[:assert_receive_timeout] ->
+        flunk("the program got #{inspect(bytes)}")
     end
   end
 
@@ -42,7 +43,7 @@ defmodule NanoKVMGo.MicrophoneTest do
     :ok = Microphone.play(mic, <<1, 0, 2, 0>>)
     :ok = Microphone.play(mic, <<3, 0>>)
 
-    assert_receive {FakeProgram, "args hw:CARD=UAC2Gadget,DEV=0 20"}, 1_000
+    assert_receive {FakeProgram, "args hw:CARD=UAC2Gadget,DEV=0 20"}
     assert received(14) == <<0, 0, 0, 4, 1, 0, 2, 0, 0, 0, 0, 2, 3, 0>>
   end
 
@@ -54,12 +55,16 @@ defmodule NanoKVMGo.MicrophoneTest do
     assert :ok = Microphone.subscribe(mic)
 
     format = %{rate: 44_100, channels: 1, sample_format: :s24_3le}
-    assert_receive {Microphone, {:format, ^format}}, 1_000
+    assert_receive {Microphone, {:format, ^format}}
     assert Microphone.format(mic) == format
 
-    # Subscribers keep the stream past the idle time of samples.
+    # Subscribers keep the stream past the idle time of samples. Traced, to
+    # know when that time is up; a call made then is handled after it.
+    :erlang.trace(mic, true, [:receive])
     :ok = Microphone.play(mic, <<0, 0, 0>>)
-    refute_receive {FakeProgram, "exit"}, 200
+    assert_receive {:trace, ^mic, :receive, :idle}
+    assert Microphone.format(mic) == format
+    assert FakeProgram.port(mic)
 
     assert :ok = Microphone.unsubscribe(mic)
     assert_receive {FakeProgram, "exit"}
@@ -70,8 +75,8 @@ defmodule NanoKVMGo.MicrophoneTest do
     mic = start_supervised!({Microphone, program: program, idle_ms: 100, name: nil})
     :ok = Microphone.play(mic, <<0, 0>>)
 
-    assert_receive {FakeProgram, "start"}, 1_000
-    assert_receive {FakeProgram, "exit"}, 1_000
+    assert_receive {FakeProgram, "start"}
+    assert_receive {FakeProgram, "exit"}
   end
 
   @tag :capture_log
@@ -79,7 +84,7 @@ defmodule NanoKVMGo.MicrophoneTest do
     program = fake_program(tmp_dir)
     mic = start_supervised!({Microphone, program: program, name: nil})
     :ok = Microphone.play(mic, <<0, 0>>)
-    assert_receive {FakeProgram, "start"}, 1_000
+    assert_receive {FakeProgram, "start"}
     port = FakeProgram.port(mic)
     ref = Port.monitor(port)
 

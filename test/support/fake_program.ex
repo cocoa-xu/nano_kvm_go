@@ -5,7 +5,9 @@ defmodule NanoKVMGo.FakeProgram do
   # test process as {NanoKVMGo.FakeProgram, text}. A run reports "start" as it
   # starts and "exit" when its script ends; a killed one reports nothing more.
   # Each run appends its PID to <program>.pids, and the runs are killed when
-  # the test ends, whatever happened to their stdin.
+  # the test ends, whatever happened to their stdin. Scripts write to stdout
+  # with `env printf`: the shell's own printf, once the port is gone, gets
+  # the shell killed by SIGPIPE, which reports no "exit".
 
   import ExUnit.Callbacks, only: [on_exit: 1]
 

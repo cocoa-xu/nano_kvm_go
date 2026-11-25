@@ -4,8 +4,8 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
 (`nerves_system_nano_kvm_go`):
 
 * **Video** - capture of the HDMI/DisplayPort input (LT7911EXC bridge, up to
-  3840x2160 at 30 fps), encoded by the hardware to H.264 for subscribers and
-  to JPEG for an MJPEG stream
+  3840x2160 at 30 fps), encoded by the hardware to H.264 or H.265 for
+  subscribers and to JPEG for an MJPEG stream
 * **Audio** - the audio of that input, as 16-bit stereo PCM, at the rate the
   source sends
 * **Two-way USB audio** - a microphone and a speaker for the target computer:
@@ -85,6 +85,8 @@ NanoKVMGo.Video.input()
 receive do
   {NanoKVMGo.Video, {:h264, :key, access_unit}} -> access_unit
 end
+
+NanoKVMGo.Video.set_encoding(codec: :h265, rate_control: :cbr, bitrate: 3_000_000)
 ```
 
 The MJPEG stream is at `http://<device>:8088/stream.mjpg`.
@@ -287,5 +289,6 @@ functions of `Kuroneko.Gadget` fit together.
 
 Apache-2.0, see [LICENSE](LICENSE), but for two files under their own
 licenses: the font, `lib/nano_kvm_go/display/font.ex`, BSD-2-Clause, and
-`c_src/v4l2_h264_enc.h`, the proposed V4L2 H.264 stateless encode uAPI,
-GPL-2.0+ WITH Linux-syscall-note or BSD-3-Clause.
+`c_src/v4l2_stateless_enc.h`, the V4L2 stateless encode uAPI of the board's
+kernel (H.264 as proposed upstream, HEVC next to it), GPL-2.0+ WITH
+Linux-syscall-note or BSD-3-Clause.

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* H.265 from `NanoKVMGo.Video` as well as H.264: the encoding's `:codec`.
+  A subscriber's messages are `{NanoKVMGo.Video, {codec, :key | :delta,
+  data}}`, the codec `:h264` or `:h265`; when it changes, the next access
+  unit is a keyframe of the new codec. The encoder device is `:encoder` in
+  `:devices`, instead of `:h264`
+* The stream declares its colour: BT.709 at full range, as the HDMI bridge
+  hands the samples over, instead of nothing, which decoders took for
+  limited range. The encoding's `:color_matrix` and `:color_range` label
+  them otherwise
 * H.264 rate control in `NanoKVMGo.Video`: the `:encoding` option, and
   `set_encoding/2`, which changes it while the capture runs. A constant QP,
   a constant bitrate, or VBR: a QP, with a higher one where the bitrate

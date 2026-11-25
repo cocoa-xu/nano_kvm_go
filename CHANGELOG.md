@@ -16,6 +16,11 @@
 * `NanoKVMGo.Video` takes its `:encoding` from a `{module, function, args}`
   too, called each time the process starts: a restart by its supervisor
   takes the encoding saved last
+* The NanoKVM-Go with 256 MiB: `NanoKVMGo.Video` holds three capture
+  buffers with a video CMA pool under 176 MiB, as the Go's 144 MiB, and four
+  otherwise (the `:capture_buffers` option); `NanoKVMGo.CMA` takes pools that
+  leave Linux 96 MiB of the DRAM, as the system's U-Boot does, instead of
+  half of it, and `:default` stands for the board's sizes
 * H.264 rate control in `NanoKVMGo.Video`: the `:encoding` option, and
   `set_encoding/2`, which changes it while the capture runs. A constant QP,
   a constant bitrate, or VBR: a QP, with a higher one where the bitrate

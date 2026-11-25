@@ -145,6 +145,21 @@ defmodule NanoKVMGo.VideoTest do
     assert Video.input(video) == input
   end
 
+  test "holds the capture buffers asked for", %{tmp_dir: tmp_dir} do
+    start_video(tmp_dir,
+      fake: ~s(event "buffers $KVM_CAPTURE_BUFFERS"\n) <> @fake,
+      capture_buffers: 5
+    )
+
+    assert_receive {FakeProgram, "buffers 5"}
+
+    for count <- [1, 7, :many] do
+      assert_raise ArgumentError, fn ->
+        Video.start_link(capture_buffers: count, devices: @devices, name: nil)
+      end
+    end
+  end
+
   test "takes the encoding a function returns each time it starts", %{tmp_dir: tmp_dir} do
     saved = start_supervised!({Agent, fn -> [rate_control: :cbr, bitrate: 3_000_000] end})
 

@@ -34,6 +34,10 @@ defmodule NanoKVMGo.Video do
     * `:devices` - the devices to capture and encode with, see
       `t:devices/0`, by default the board's, found by their drivers each
       time the capture starts
+    * `:capture_buffers` - how many frames the capture holds, 2 to 6, which
+      the encoders read in place: by default four with a video CMA pool of
+      176 MiB or more, three with less, as on the Go with 256 MiB (see
+      `NanoKVMGo.CMA`)
     * `:program` - the port program, the library's `nano_kvm_go_video` by
       default
 
@@ -143,6 +147,7 @@ defmodule NanoKVMGo.Video do
           | {:jpeg_quality, 1..100}
           | {:encoding, keyword() | map() | {module(), atom(), [term()]}}
           | {:devices, devices() | nil}
+          | {:capture_buffers, 2..6 | :auto}
           | {:program, Path.t()}
 
   @type edid_option() :: {:device, Path.t()} | {:program, Path.t()}
@@ -169,6 +174,7 @@ defmodule NanoKVMGo.Video do
           jpeg_quality: 60,
           encoding: [],
           devices: nil,
+          capture_buffers: :auto,
           program: Application.app_dir(:nano_kvm_go, "priv/nano_kvm_go_video")
         ],
         &valid?/2
@@ -548,14 +554,26 @@ defmodule NanoKVMGo.Video do
         ],
         else: []
 
+    env = [
+      {~c"KVM_PORT", ~c"1"},
+      {~c"KVM_CAPTURE_BUFFERS", Integer.to_charlist(capture_buffers(config))}
+    ]
+
     Port.open({:spawn_executable, config.program}, [
       :binary,
       {:packet, 4},
       :exit_status,
       args: args,
-      env: [{~c"KVM_PORT", ~c"1"} | encoder_env] ++ token_env(config.mjpeg_token)
+      env: env ++ encoder_env ++ token_env(config.mjpeg_token)
     ])
   end
+
+  # Four frames at 4K take about 140 MiB with JPEG and a video encoder: the
+  # Go's 144 MiB pool takes three.
+  defp capture_buffers(%{capture_buffers: :auto}),
+    do: if(NanoKVMGo.CMA.sizes().video >= 176, do: 4, else: 3)
+
+  defp capture_buffers(%{capture_buffers: count}), do: count
 
   defp command(%{port: nil}, _command), do: :ok
   defp command(%{encoder?: false}, _command), do: :ok
@@ -643,6 +661,8 @@ defmodule NanoKVMGo.Video do
   defp valid?(:mjpeg_token, nil), do: true
   defp valid?(:mjpeg_token, token), do: is_binary(token) and token =~ ~r/\A[A-Za-z0-9_-]{16,}\z/
   defp valid?(:jpeg_quality, quality), do: quality in 1..100
+
+  defp valid?(:capture_buffers, count), do: count == :auto or count in 2..6
 
   defp valid?(:encoding, {module, function, args}),
     do: is_atom(module) and is_atom(function) and is_list(args)

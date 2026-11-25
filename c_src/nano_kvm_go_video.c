@@ -24,6 +24,10 @@
  * fps of 0 for the input's; the colour the stream declares, "auto", "bt601"
  * or "bt709" and "auto", "full" or "limited".
  *
+ * KVM_CAPTURE_BUFFERS is how many frames the capture holds, 2 to MAX_CAP,
+ * 4 without it: the encoders read them in place, so their memory and the
+ * room the encoders have to finish one go together.
+ *
  * The program waits for an input it can capture and streams it at its own
  * size; when the input changes it exits with status 3 (EXIT_INPUT_CHANGED),
  * to be started again.
@@ -53,7 +57,7 @@
 
 #include "v4l2_stateless_enc.h"
 
-#define NCAP 4
+#define MAX_CAP 6
 #define NJPEG 4
 #define MAX_CLIENTS 8
 #define EXIT_INPUT_CHANGED 3
@@ -523,8 +527,10 @@ static void rc_frame(size_t bytes, int keyframe)
 	rc.qp = clamp_qp(qp);
 }
 
+static unsigned int ncap = 4;
+
 /* Encoders using each capture buffer; it goes back to capture at zero. */
-static int cap_refs[NCAP];
+static int cap_refs[MAX_CAP];
 
 static void release_cap(int cap, int index)
 {
@@ -680,7 +686,7 @@ static void venc_start(void)
 	if (venc.codec == CODEC_H264)
 		h264_setup();
 
-	req.count = NCAP;
+	req.count = ncap;
 	req.type = out_type;
 	req.memory = V4L2_MEMORY_DMABUF;
 	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req))
@@ -975,16 +981,17 @@ int main(int argc, char **argv)
 	enum v4l2_buf_type jpg_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	struct v4l2_format cfmt = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
 	struct v4l2_format raw;
-	struct v4l2_create_buffers cb = { .count = NCAP, .memory = V4L2_MEMORY_MMAP };
+	struct v4l2_create_buffers cb = { .memory = V4L2_MEMORY_MMAP };
 	struct v4l2_requestbuffers req;
 	struct v4l2_control ctrl;
-	int dmabuf[NCAP];
+	int dmabuf[MAX_CAP];
 	int cap, enc, i, quality = 75, seconds = 0, port = 0, enc_busy = -1, run = 0, njpeg;
 	unsigned int fps, bufsize;
 	unsigned long gen = 0, captured = 0;
 	const char *out = NULL, *venc_dev = NULL, *encoding;
 	double t0, tstat, tq = 0, lat_sum = 0;
-	unsigned long ncap = 0, nenc = 0, bytes = 0, nstat_enc = 0, nstat_venc = 0;
+	unsigned long ncaptured = 0, nenc = 0, bytes = 0, nstat_enc = 0, nstat_venc = 0;
+	const char *buffers;
 	pthread_t th;
 
 	if (argc < 4) {
@@ -998,6 +1005,16 @@ int main(int argc, char **argv)
 	encoding = getenv("KVM_ENCODING");
 	if (packet_mode && encoding && !rc_set(encoding))
 		logline("not an encoding: %s", encoding);
+	buffers = getenv("KVM_CAPTURE_BUFFERS");
+	if (buffers) {
+		char *end;
+		long n = strtol(buffers, &end, 10);
+
+		if (*buffers && !*end && n >= 2 && n <= MAX_CAP)
+			ncap = n;
+		else
+			logline("not a capture buffer count: %s", buffers);
+	}
 	if (!strcmp(argv[3], "-o")) {
 		if (argc < 5)
 			return 2;
@@ -1045,11 +1062,12 @@ int main(int argc, char **argv)
 	}
 
 	/* The encoders read whole macroblock rows: the buffers hold them. */
+	cb.count = ncap;
 	cb.format = cfmt;
 	cb.format.fmt.pix.sizeimage = bufsize;
-	if (xioctl(cap, VIDIOC_CREATE_BUFS, &cb) || cb.count < NCAP)
+	if (xioctl(cap, VIDIOC_CREATE_BUFS, &cb) || cb.count < ncap)
 		die("CREATE_BUFS capture");
-	for (i = 0; i < NCAP; i++) {
+	for (i = 0; i < (int)ncap; i++) {
 		struct v4l2_exportbuffer exp = { .type = cap_type, .index = i, .flags = O_RDWR };
 		struct v4l2_buffer buf = { .type = cap_type, .memory = V4L2_MEMORY_MMAP, .index = i };
 
@@ -1061,7 +1079,7 @@ int main(int argc, char **argv)
 	}
 
 	memset(&req, 0, sizeof(req));
-	req.count = NCAP;
+	req.count = ncap;
 	req.type = out_type;
 	req.memory = V4L2_MEMORY_DMABUF;
 	if (xioctl(enc, VIDIOC_REQBUFS, &req))
@@ -1254,7 +1272,7 @@ int main(int argc, char **argv)
 			if (!xioctl(cap, VIDIOC_DQBUF, &buf)) {
 				int refs = 0;
 
-				ncap++;
+				ncaptured++;
 				captured++;
 				if ((out || __atomic_load_n(&nclients, __ATOMIC_RELAXED)) &&
 				    enc_busy < 0) {
@@ -1293,11 +1311,11 @@ int main(int argc, char **argv)
 			double dt = now() - tstat;
 
 			logline("capture %.1f fps, jpeg %.1f fps, sent %.1f fps, %.0f KB avg, encode+wait %.1f ms, clients %d, %s %.1f fps %.2f Mbit/s QP %d",
-			       ncap / dt, nstat_enc / dt, __atomic_exchange_n(&nsent, 0, __ATOMIC_RELAXED) / dt,
+			       ncaptured / dt, nstat_enc / dt, __atomic_exchange_n(&nsent, 0, __ATOMIC_RELAXED) / dt,
 			       nstat_enc ? bytes / 1024.0 / nstat_enc : 0,
 			       nstat_enc ? lat_sum * 1000 / nstat_enc : 0, nclients,
 			       codecs[venc.codec].name, nstat_venc / dt, venc_bytes * 8 / dt / 1e6, rc.qp);
-			ncap = nstat_enc = bytes = nstat_venc = venc_bytes = 0;
+			ncaptured = nstat_enc = bytes = nstat_venc = venc_bytes = 0;
 			lat_sum = 0;
 			tstat = now();
 		}

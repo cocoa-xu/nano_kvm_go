@@ -3,20 +3,27 @@ defmodule NanoKVMGo.VideoTest do
   # other's pipes open.
   use ExUnit.Case, async: false
 
-  alias NanoKVMGo.{FakeProgram, Peer, Video, Wait}
+  alias NanoKVMGo.{FakeProgram, Peer, Video}
 
   @moduletag :tmp_dir
 
-  # Stands in for nano_kvm_go_video: reports an input, then answers the stream
-  # commands ("1" start, "k" keyframe) with {:packet, 4} frames until its
-  # stdin ends. Each command comes {:packet, 4} framed too, 5 bytes. The
-  # shell's own printf would leave what it failed to write, once the port
-  # is gone, to the command substitution, which would then loop forever.
+  @devices %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
+
+  # Stands in for nano_kvm_go_video: reports an input, then reports each
+  # command it gets as an event and answers the stream commands ("1" start,
+  # "k" keyframe) with {:packet, 4} frames, until its stdin ends. A command
+  # is {:packet, 4} framed too: a 4-byte length, then the command. The
+  # shell's own printf would leave what it failed to write, once the port is
+  # gone, to the command substitution, which would then loop forever.
   @fake """
   env printf '\\000\\000\\000\\015\\003'
   env printf '1920x1080@60'
-  while c=$(dd bs=5 count=1 2>/dev/null | tail -c 1) && [ -n "$c" ]; do
-    case "$c" in
+  while length=$(dd bs=4 count=1 2>/dev/null | od -An -tu1 |
+                 awk 'NR == 1 { print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }') &&
+        [ -n "$length" ]; do
+    command=$(dd bs="$length" count=1 2>/dev/null)
+    event "command $command"
+    case "$command" in
       1) env printf '\\000\\000\\000\\004\\002KEY\\000\\000\\000\\004\\001DEL' ;;
       k) env printf '\\000\\000\\000\\004\\002KEY' ;;
     esac
@@ -27,17 +34,13 @@ defmodule NanoKVMGo.VideoTest do
   @edid <<0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00>> <>
           :binary.copy(<<0>>, 119) <> <<6>>
 
-  # The {:packet, 4} commands a program was sent.
-  defp commands(path) do
-    for <<size::32, command::binary-size(size) <- File.read!(path)>>, do: command
-  end
-
-  # A capture of the fake program, once it runs.
-  defp start_video(tmp_dir, fake \\ @fake) do
+  # A capture of a fake program, once the program runs.
+  defp start_video(tmp_dir, opts \\ []) do
+    {fake, opts} = Keyword.pop(opts, :fake, @fake)
     program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), fake)
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
-    video = start_supervised!({Video, program: program, devices: devices, name: nil})
-    Wait.until(fn -> Video.input(video) != nil end)
+    video = start_supervised!({Video, [program: program, devices: @devices, name: nil] ++ opts})
+    # The first program of a run can take a while to start.
+    assert_receive {FakeProgram, "start"}, 1_000
     {video, program}
   end
 
@@ -45,7 +48,7 @@ defmodule NanoKVMGo.VideoTest do
     {video, _program} = start_video(tmp_dir)
     assert :ok = Video.subscribe(video)
 
-    assert_receive {Video, {:input, %{width: 1920, height: 1080, fps: 60}}}, 1_000
+    assert_receive {Video, {:input, %{width: 1920, height: 1080, fps: 60}}}
     assert_receive {Video, {:h264, :key, "KEY"}}
     assert_receive {Video, {:h264, :delta, "DEL"}}
 
@@ -53,8 +56,10 @@ defmodule NanoKVMGo.VideoTest do
     assert_receive {Video, {:h264, :key, "KEY"}}
 
     assert :ok = Video.unsubscribe(video)
+    assert_receive {FakeProgram, "command 0"}
     Video.request_keyframe(video)
-    refute_receive {Video, _event}, 100
+    assert_receive {FakeProgram, "command k"}
+    refute_receive {Video, _message}
   end
 
   test "tells subscribers the codec of each access unit", %{tmp_dir: tmp_dir} do
@@ -64,71 +69,89 @@ defmodule NanoKVMGo.VideoTest do
       |> String.replace("\\002KEY", "\\005KEY")
       |> String.replace("\\001DEL", "\\004DEL")
 
-    {video, _program} = start_video(tmp_dir, h265)
+    {video, _program} = start_video(tmp_dir, fake: h265)
     assert :ok = Video.subscribe(video)
 
-    assert_receive {Video, {:h265, :key, "KEY"}}, 1_000
+    assert_receive {Video, {:h265, :key, "KEY"}}
     assert_receive {Video, {:h265, :delta, "DEL"}}
   end
 
-  test "tells a subscriber the input once it is known", %{tmp_dir: tmp_dir} do
-    program = FakeProgram.write!(Path.join(tmp_dir, "quiet_video"), "exec cat > /dev/null\n")
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
-    video = start_supervised!({Video, program: program, devices: devices, name: nil})
-    Wait.until(fn -> FakeProgram.running?(program) end)
+  test "takes H.265 while every subscriber decodes it", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    assert Video.codec(video) == :h264
 
+    assert :ok = Video.subscribe(video, codecs: [:h264, :h265])
+    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "command 1"}
+    assert Video.codec(video) == :h265
+
+    test = self()
+
+    h264_only =
+      spawn(fn ->
+        :ok = Video.subscribe(video)
+        send(test, :subscribed)
+        receive do: (:leave -> :ok)
+      end)
+
+    assert_receive :subscribed
+    assert_receive {FakeProgram, "command e h264 vbr 8000000 24 600 0 auto auto"}
+    assert Video.codec(video) == :h264
+
+    send(h264_only, :leave)
+    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 600 0 auto auto"}
+
+    assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: []) end
+    assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: [:vp9]) end
+  end
+
+  test "tells a subscriber the input once it is known", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir, fake: "cat > /dev/null\n")
+
+    # The input would come before the reply.
     assert :ok = Video.subscribe(video)
-    refute_receive {Video, _message}, 100
+    refute_received {Video, _message}
   end
 
   test "streams to a subscriber on another node", %{tmp_dir: tmp_dir} do
     {video, _program} = start_video(tmp_dir)
-    subscriber = Peer.spawn_caller(video, :subscribe)
+    Peer.spawn_caller("NanoKVMGo.Video.subscribe(server)", server: video)
 
-    # The input, a keyframe and a delta.
-    Wait.until(fn -> Peer.message_queue_len(subscriber) == 3 end)
-    assert Video.input(video) == %{width: 1920, height: 1080, fps: 60}
+    # The peer takes a while to start.
+    assert_receive {Peer, {Video, {:input, %{width: 1920, height: 1080, fps: 60}}}}, 10_000
+    assert_receive {Peer, {Video, {:h264, :key, "KEY"}}}
+    assert_receive {Peer, {Video, {:h264, :delta, "DEL"}}}
   end
 
   @tag :capture_log
   test "takes a command that comes as the program exits", %{tmp_dir: tmp_dir} do
     {video, program} = start_video(tmp_dir)
+    :ok = Video.subscribe(video)
+    assert_receive {Video, {:input, input}}
     port = FakeProgram.port(video)
+    ref = Port.monitor(port)
 
+    # The keyframe request waits in the queue while the program dies.
     :ok = :sys.suspend(video)
     Video.request_keyframe(video)
     FakeProgram.kill(program)
-    Wait.until(fn -> Port.info(port) == nil end)
+    assert_receive {:DOWN, ^ref, :port, ^port, _reason}
     :ok = :sys.resume(video)
 
-    assert Video.input(video) == %{width: 1920, height: 1080, fps: 60}
+    assert Video.input(video) == input
   end
 
   test "encodes as asked, from the start and while it runs", %{tmp_dir: tmp_dir} do
-    commands = Path.join(tmp_dir, "commands")
-
-    program =
-      FakeProgram.write!(Path.join(tmp_dir, "recording_video"), """
-      echo "$KVM_ENCODING" > '#{tmp_dir}/encoding'
-      env printf '\\000\\000\\000\\015\\003'
-      env printf '1920x1080@60'
-      exec cat > '#{commands}'
-      """)
-
-    devices = %{capture: "/dev/null", jpeg: "/dev/null", encoder: "/dev/null"}
-    encoding = [rate_control: :cbr, bitrate: 3_000_000]
-
-    video =
-      start_supervised!(
-        {Video, program: program, devices: devices, encoding: encoding, name: nil}
+    {video, _program} =
+      start_video(tmp_dir,
+        fake: ~s(event "encoding $KVM_ENCODING"\n) <> @fake,
+        encoding: [rate_control: :cbr, bitrate: 3_000_000]
       )
 
-    Wait.until(fn -> Video.input(video) != nil end)
-
-    assert File.read!(Path.join(tmp_dir, "encoding")) == "h264 cbr 3000000 24 600 0 auto auto\n"
+    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 600 0 auto auto"}
 
     assert Video.encoding(video) == %{
-             codec: :h264,
+             codec: :auto,
              rate_control: :cbr,
              bitrate: 3_000_000,
              qp: 24,
@@ -141,7 +164,8 @@ defmodule NanoKVMGo.VideoTest do
     assert %{codec: :h265, rate_control: :vbr, bitrate: 3_000_000, max_fps: 30} =
              Video.set_encoding(video, codec: :h265, rate_control: :vbr, max_fps: 30)
 
-    Wait.until(fn -> commands(commands) == ["e h265 vbr 3000000 24 600 30 auto auto"] end)
+    assert_receive {FakeProgram, "command e h265 vbr 3000000 24 600 30 auto auto"}
+    assert Video.codec(video) == :h265
 
     for changes <- [
           [qp: 52],

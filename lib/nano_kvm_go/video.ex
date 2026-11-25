@@ -25,8 +25,9 @@ defmodule NanoKVMGo.Video do
       Without one the stream and a viewer page are open to anyone who
       reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
-    * `:encoding` - how the stream is encoded, see `t:encoding/0`: H.264,
-      VBR of up to 8 Mbit/s at QP 24, a keyframe every 600 frames, by default
+    * `:encoding` - how the stream is encoded, see `t:encoding/0`: the
+      codec every subscriber decodes, VBR of up to 8 Mbit/s at QP 24, a
+      keyframe every 600 frames, by default
     * `:devices` - the devices to capture and encode with, see
       `t:devices/0`, by default the board's, found by their drivers each
       time the capture starts
@@ -63,7 +64,7 @@ defmodule NanoKVMGo.Video do
 
   @restart_delay 2_000
   @default_encoding %{
-    codec: :h264,
+    codec: :auto,
     rate_control: :vbr,
     bitrate: 8_000_000,
     qp: 24,
@@ -98,7 +99,8 @@ defmodule NanoKVMGo.Video do
   @typedoc """
   How the stream is encoded:
 
-    * `:codec` - `:h264` or `:h265`
+    * `:codec` - `:h264`, `:h265`, or `:auto` for H.265 while every
+      subscriber decodes it and H.264 otherwise (see `subscribe/2`)
     * `:rate_control` - `:constant_qp`, every frame at `:qp`; `:cbr`, at a
       constant `:bitrate`; `:vbr`, at `:qp` unless the bitrate would go over
       `:bitrate`, then at the QP that keeps it
@@ -121,7 +123,7 @@ defmodule NanoKVMGo.Video do
   shifts the colours a decoder shows.
   """
   @type encoding() :: %{
-          codec: :h264 | :h265,
+          codec: :auto | :h264 | :h265,
           rate_control: :constant_qp | :cbr | :vbr,
           bitrate: pos_integer(),
           qp: 0..51,
@@ -141,6 +143,9 @@ defmodule NanoKVMGo.Video do
           | {:program, Path.t()}
 
   @type edid_option() :: {:device, Path.t()} | {:program, Path.t()}
+
+  @typedoc "An option of `subscribe/2`: the codecs the subscriber decodes."
+  @type subscribe_option() :: {:codecs, [:h264 | :h265, ...]}
 
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
@@ -193,9 +198,26 @@ defmodule NanoKVMGo.Video do
   @doc """
   Sends the input and the stream to the caller until it unsubscribes or
   exits. Returns `{:error, :no_encoder}` without the H.264 and H.265 encoder.
+
+  The option `:codecs` names those the caller decodes, `[:h264]` by
+  default: with the `:auto` codec the stream takes H.265 while every
+  subscriber decodes it. Subscribing again changes them. With options,
+  name the server first:
+
+      NanoKVMGo.Video.subscribe(NanoKVMGo.Video, codecs: [:h264, :h265])
   """
-  @spec subscribe(GenServer.server()) :: :ok | {:error, :no_encoder}
-  def subscribe(server \\ __MODULE__), do: GenServer.call(server, :subscribe)
+  @spec subscribe(GenServer.server(), [subscribe_option()]) :: :ok | {:error, :no_encoder}
+  def subscribe(server \\ __MODULE__, opts \\ []) do
+    opts = Options.validate!(opts, [codecs: [:h264]], &valid_subscription?/2)
+    GenServer.call(server, {:subscribe, opts[:codecs]})
+  end
+
+  @doc """
+  The codec the stream takes now, `:h264` or `:h265`: the encoding's, or
+  for `:auto` the one every subscriber decodes.
+  """
+  @spec codec(GenServer.server()) :: :h264 | :h265
+  def codec(server \\ __MODULE__), do: GenServer.call(server, :codec)
 
   @doc """
   Stops sending to the caller.
@@ -296,11 +318,12 @@ defmodule NanoKVMGo.Video do
       encoder?: false,
       subscribers: %{},
       key_requested?: false,
-      input: nil
+      input: nil,
+      codec: nil
     }
 
     if File.regular?(config.program),
-      do: {:ok, state, {:continue, :start}},
+      do: {:ok, %{state | codec: stream_codec(state)}, {:continue, :start}},
       else: {:stop, {:missing_program, config.program}}
   end
 
@@ -308,19 +331,22 @@ defmodule NanoKVMGo.Video do
   def handle_continue(:start, state), do: {:noreply, start_program(state)}
 
   @impl GenServer
-  def handle_call(:subscribe, _from, %{port: port, encoder?: false} = state) when port != nil do
+  def handle_call({:subscribe, _codecs}, _from, %{port: port, encoder?: false} = state)
+      when port != nil do
     {:reply, {:error, :no_encoder}, state}
   end
 
-  def handle_call(:subscribe, {pid, _tag}, state) do
+  def handle_call({:subscribe, codecs}, {pid, _tag}, state) do
     state =
-      if Map.has_key?(state.subscribers, pid) do
-        state
-      else
-        first? = state.subscribers == %{}
-        command(state, if(first?, do: :start_stream, else: :keyframe))
-        subscriber = %{monitor: Process.monitor(pid), synced?: false}
-        %{state | subscribers: Map.put(state.subscribers, pid, subscriber), key_requested?: true}
+      case state.subscribers do
+        %{^pid => subscriber} ->
+          choose_codec(put_in(state.subscribers[pid], %{subscriber | codecs: codecs}))
+
+        subscribers ->
+          subscriber = %{monitor: Process.monitor(pid), synced?: false, codecs: codecs}
+          state = choose_codec(%{state | subscribers: Map.put(subscribers, pid, subscriber)})
+          :ok = command(state, if(subscribers == %{}, do: :start_stream, else: :keyframe))
+          %{state | key_requested?: true}
       end
 
     if state.input, do: send(pid, {__MODULE__, {:input, state.input}})
@@ -335,9 +361,12 @@ defmodule NanoKVMGo.Video do
 
   def handle_call(:encoding, _from, state), do: {:reply, state.config.encoding, state}
 
+  def handle_call(:codec, _from, state), do: {:reply, state.codec, state}
+
   def handle_call({:set_encoding, changes}, _from, state) do
     state = update_in(state.config.encoding, &Map.merge(&1, changes))
-    :ok = command(state, {:encoding, state.config.encoding})
+    state = %{state | codec: stream_codec(state)}
+    :ok = command(state, {:encoding, program_encoding(state)})
     {:reply, state.config.encoding, state}
   end
 
@@ -444,10 +473,35 @@ defmodule NanoKVMGo.Video do
 
       {subscriber, subscribers} ->
         Process.demonitor(subscriber.monitor, [:flush])
-        if subscribers == %{}, do: command(state, :stop_stream)
-        %{state | subscribers: subscribers}
+        state = %{state | subscribers: subscribers}
+        if subscribers == %{}, do: :ok = command(state, :stop_stream)
+        choose_codec(state)
     end
   end
+
+  # The codec the stream takes: the encoding's, or for :auto H.265 while
+  # every subscriber decodes it.
+  defp stream_codec(%{config: %{encoding: %{codec: :auto}}} = state) do
+    subscribers = Map.values(state.subscribers)
+    if subscribers != [] and Enum.all?(subscribers, &(:h265 in &1.codecs)), do: :h265, else: :h264
+  end
+
+  defp stream_codec(state), do: state.config.encoding.codec
+
+  # Tells the program when the codec the subscribers call for changes.
+  defp choose_codec(state) do
+    case stream_codec(state) do
+      codec when codec == state.codec ->
+        state
+
+      codec ->
+        state = %{state | codec: codec}
+        :ok = command(state, {:encoding, program_encoding(state)})
+        state
+    end
+  end
+
+  defp program_encoding(state), do: %{state.config.encoding | codec: state.codec}
 
   defp stopped(state) do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
@@ -459,7 +513,8 @@ defmodule NanoKVMGo.Video do
 
     case devices(config) do
       {:ok, devices} ->
-        port = open_port(config, devices)
+        state = %{state | codec: stream_codec(state)}
+        port = open_port(config, devices, program_encoding(state))
         state = %{state | port: port, encoder?: devices.encoder != nil, key_requested?: false}
         if state.subscribers != %{}, do: command(state, :start_stream)
         state
@@ -474,7 +529,7 @@ defmodule NanoKVMGo.Video do
   defp token_env(nil), do: []
   defp token_env(token), do: [{~c"KVM_MJPEG_TOKEN", String.to_charlist(token)}]
 
-  defp open_port(config, devices) do
+  defp open_port(config, devices, encoding) do
     args = [
       devices.capture,
       devices.jpeg,
@@ -486,7 +541,7 @@ defmodule NanoKVMGo.Video do
       if devices.encoder,
         do: [
           {~c"KVM_ENCODER_DEV", String.to_charlist(devices.encoder)},
-          {~c"KVM_ENCODING", String.to_charlist(Protocol.encoding(config.encoding))}
+          {~c"KVM_ENCODING", String.to_charlist(Protocol.encoding(encoding))}
         ],
         else: []
 
@@ -538,7 +593,7 @@ defmodule NanoKVMGo.Video do
     |> then(&Map.merge(encoding, &1))
   end
 
-  defp valid_encoding?(:codec, codec), do: codec in [:h264, :h265]
+  defp valid_encoding?(:codec, codec), do: codec in [:auto, :h264, :h265]
 
   defp valid_encoding?(:rate_control, rate_control),
     do: rate_control in [:constant_qp, :cbr, :vbr]
@@ -549,6 +604,9 @@ defmodule NanoKVMGo.Video do
   defp valid_encoding?(:max_fps, fps), do: fps in 0..1_000
   defp valid_encoding?(:color_matrix, matrix), do: matrix in [:auto, :bt601, :bt709]
   defp valid_encoding?(:color_range, range), do: range in [:auto, :full, :limited]
+
+  defp valid_subscription?(:codecs, codecs),
+    do: is_list(codecs) and codecs != [] and Enum.all?(codecs, &(&1 in [:h264, :h265]))
 
   defp capture_device(opts) do
     case Keyword.get_lazy(opts, :device, &Devices.capture/0) do

@@ -28,7 +28,8 @@ defmodule NanoKVMGo.CMATest do
     dt = Path.join(root, "proc/device-tree")
     write(dt, "#address-cells", <<1::32>>)
     write(dt, "#size-cells", <<1::32>>)
-    write(dt, "memory@40000000/reg", <<0x40000000::32, 0x20000000::32>>)
+    dram = Keyword.get(opts, :dram, 512)
+    write(dt, "memory@40000000/reg", <<0x40000000::32, dram * 1_048_576::32>>)
 
     write(
       dt,
@@ -39,7 +40,7 @@ defmodule NanoKVMGo.CMATest do
     write(dt, "reserved-memory/linux,cma/linux,cma-default", "")
     write(dt, "reserved-memory/npu-memory/size", <<64 * 1_048_576::32>>)
     write(dt, "reserved-memory/npu-memory/phandle", <<0x2A::32>>)
-    write(dt, "reserved-memory/ramlog@55f00000/reg", <<0x55F00000::32, 0x100000::32>>)
+    write(dt, "reserved-memory/ramlog@4ff00000/reg", <<0x4FF00000::32, 0x100000::32>>)
     write(dt, "soc/npu@3800000/compatible", "axera,ax620e-npu\0")
     write(dt, "soc/npu@3800000/memory-region", <<0x2A::32>>)
 
@@ -93,9 +94,19 @@ defmodule NanoKVMGo.CMATest do
 
     assert CMA.persist_sizes(%{video: 100}, opts) == {:error, {:invalid_size, :video, 100}}
     assert CMA.persist_sizes(%{video: 0}, opts) == {:error, {:invalid_size, :video, 0}}
-    assert CMA.persist_sizes(%{video: 264}, opts) == {:error, {:invalid_size, :video, 264}}
-    assert CMA.persist_sizes(%{video: 200, npu: 64}, opts) == {:error, {:too_large, 264, 256}}
+    assert CMA.persist_sizes(%{video: 424}, opts) == {:error, {:invalid_size, :video, 424}}
+    assert CMA.persist_sizes(%{video: 360, npu: 64}, opts) == {:error, {:too_large, 424, 416}}
     assert KV.env() == %{}
+  end
+
+  test "takes what the Go's 256 MiB leave", %{tmp_dir: tmp_dir} do
+    opts = [kv: KV, root: device_tree(tmp_dir, dram: 256, video: 144, npu_off: true)]
+
+    assert CMA.sizes(root: opts[:root]) == %{video: 144, npu: 0}
+    assert CMA.persist_sizes(%{video: 168}, opts) == {:error, {:invalid_size, :video, 168}}
+    assert CMA.persist_sizes(%{video: 144, npu: 24}, opts) == {:error, {:too_large, 168, 160}}
+    assert :ok = CMA.persist_sizes(%{video: 128, npu: 32}, opts)
+    assert %{"cma_video" => "128", "cma_npu" => "32"} = KV.env()
   end
 
   test "raises for what is no pool size", %{tmp_dir: tmp_dir} do

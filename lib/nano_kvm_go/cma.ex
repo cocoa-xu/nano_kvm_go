@@ -15,9 +15,12 @@ defmodule NanoKVMGo.CMA do
       #=> :ok
 
   Sizes are in MiB: multiples of 8, video's at least 8, the NPU's 0 to turn
-  the NPU off, together at most half of the DRAM. `:default` stands for the
-  device tree's size, 192 and 64 on the Go+. 4K capture with JPEG and H.264
-  needs about 192 MiB.
+  the NPU off, together leaving Linux at least 96 MiB of the DRAM.
+  `:default` stands for the board's size: 192 and 64 on the Go+ (512 MiB),
+  144 and 0 on the Go (256 MiB). 4K capture with JPEG and H.264 needs about
+  192 MiB, or about 144 with fewer capture buffers. On a card moved to the
+  other board, sizes that do not fit it give the board's, and apply again
+  back on the board they were set on.
 
   The sizes for the next boots are in the U-Boot environment, through
   `Nerves.Runtime.KV` or another module with its `get/1` and `put/1` (the
@@ -36,8 +39,10 @@ defmodule NanoKVMGo.CMA do
 
   # Linux aligns CMA pools to its page blocks: 2^11 pages of 4 KiB.
   @align 8
+  # What Linux keeps of the DRAM besides the pools, in MiB.
+  @linux_min 96
 
-  @typedoc "A pool size in MiB, or `:default` for the device tree's."
+  @typedoc "A pool size in MiB, or `:default` for the board's."
   @type size() :: non_neg_integer() | :default
 
   @type sizes() :: %{video: non_neg_integer(), npu: non_neg_integer()}
@@ -104,10 +109,11 @@ defmodule NanoKVMGo.CMA do
   Persists pool sizes for the next boots: `:video` and `:npu` in MiB, or
   `:default`. A size left out stays as it is, and a trial under way ends.
 
-  A size U-Boot would not take gives `{:error, {:invalid_size, pool,
-  size}}`, and sizes together over half the DRAM `{:error, {:too_large,
-  total, half}}`. A pool other than `:video` and `:npu`, or a size that is
-  neither a non-negative integer nor `:default`, raises `ArgumentError`.
+  A size U-Boot would not take on this board gives `{:error,
+  {:invalid_size, pool, size}}`, and sizes that together leave Linux less
+  than 96 MiB `{:error, {:too_large, total, max}}`. A pool other than
+  `:video` and `:npu`, or a size that is neither a non-negative integer nor
+  `:default`, raises `ArgumentError`.
 
   ## Options
 
@@ -125,11 +131,11 @@ defmodule NanoKVMGo.CMA do
     kv = opts[:kv]
     persisted = persisted_sizes(kv: kv)
     new = Map.merge(persisted, sizes)
-    half = half_dram_mb(opts[:root])
+    max = max_mb(opts[:root])
 
-    with :ok <- check_size(:video, new.video, @align, half),
-         :ok <- check_size(:npu, new.npu, 0, half),
-         :ok <- check_total(new, half) do
+    with :ok <- check_size(:video, new.video, @align, max),
+         :ok <- check_size(:npu, new.npu, 0, max),
+         :ok <- check_total(new, max) do
       kv.put(variables(new, persisted, opts[:trial]))
     end
   end
@@ -205,30 +211,31 @@ defmodule NanoKVMGo.CMA do
     raise ArgumentError, "invalid pool size: #{inspect(pool_size)}"
   end
 
-  # As U-Boot checks them; without the DRAM's size (half: nil) it alone
+  # As U-Boot checks them; without the DRAM's size (max: nil) it alone
   # checks the upper bound.
-  defp check_size(_pool, :default, _min, _half), do: :ok
+  defp check_size(_pool, :default, _min, _max), do: :ok
 
-  defp check_size(_pool, mb, min, half)
-       when is_integer(mb) and mb >= min and rem(mb, @align) == 0 and (half == nil or mb <= half),
+  defp check_size(_pool, mb, min, max)
+       when is_integer(mb) and mb >= min and rem(mb, @align) == 0 and (max == nil or mb <= max),
        do: :ok
 
-  defp check_size(pool, mb, _min, _half), do: {:error, {:invalid_size, pool, mb}}
+  defp check_size(pool, mb, _min, _max), do: {:error, {:invalid_size, pool, mb}}
 
-  # U-Boot keeps the device tree's sizes when both together take more than
-  # half of the DRAM. With a default size the total is up to U-Boot.
-  defp check_total(%{video: video, npu: npu}, half)
-       when is_integer(video) and is_integer(npu) and is_integer(half) and video + npu > half,
-       do: {:error, {:too_large, video + npu, half}}
+  # U-Boot takes the board's sizes when both together leave Linux too
+  # little. With a default size the total is up to U-Boot.
+  defp check_total(%{video: video, npu: npu}, max)
+       when is_integer(video) and is_integer(npu) and is_integer(max) and video + npu > max,
+       do: {:error, {:too_large, video + npu, max}}
 
-  defp check_total(_sizes, _half), do: :ok
+  defp check_total(_sizes, _max), do: :ok
 
   defp device_tree(root), do: Path.join(root, "proc/device-tree")
 
-  defp half_dram_mb(root) do
+  # What the pools may take together, as U-Boot has it: all but 96 MiB.
+  defp max_mb(root) do
     case dram_mb(device_tree(root)) do
       nil -> nil
-      dram -> div(dram, 2)
+      dram -> dram - @linux_min
     end
   end
 

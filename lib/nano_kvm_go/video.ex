@@ -594,7 +594,7 @@ defmodule NanoKVMGo.Video do
   end
 
   # Four frames at 4K take about 140 MiB with JPEG and a video encoder: the
-  # Go's 144 MiB pool takes three.
+  # Go's 128 MiB pool takes three.
   defp capture_buffers(%{capture_buffers: :auto}),
     do: if(NanoKVMGo.CMA.sizes().video >= 176, do: 4, else: 3)
 

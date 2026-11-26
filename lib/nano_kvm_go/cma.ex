@@ -17,8 +17,9 @@ defmodule NanoKVMGo.CMA do
   Sizes are in MiB: multiples of 8, video's at least 8, the NPU's 0 to turn
   the NPU off, together leaving Linux at least 96 MiB of the DRAM.
   `:default` stands for the board's size: 192 and 64 on the Go+ (512 MiB),
-  144 and 0 on the Go (256 MiB). 4K capture with JPEG and H.264 needs about
-  192 MiB, or about 144 with fewer capture buffers. On a card moved to the
+  128 and 0 on the Go (256 MiB). 4K capture with JPEG and H.264 takes about
+  140 MiB with four capture buffers and 120 with three, as on the Go, counting
+  what else Linux keeps in the pool. On a card moved to the
   other board, sizes that do not fit it give the board's, and apply again
   back on the board they were set on.
 
@@ -238,9 +239,9 @@ defmodule NanoKVMGo.CMA do
   end
 
   # As the NanoKVM-Go system's U-Boot sizes them: the Go+'s device tree, and
-  # on the Go 144 MiB for video and the NPU off.
+  # on the Go 128 MiB for video and the NPU off.
   defp board_sizes(dram) when dram >= 512, do: %{video: 192, npu: 64}
-  defp board_sizes(_dram), do: %{video: 144, npu: 0}
+  defp board_sizes(_dram), do: %{video: 128, npu: 0}
 
   defp device_tree(root), do: Path.join(root, "proc/device-tree")
 

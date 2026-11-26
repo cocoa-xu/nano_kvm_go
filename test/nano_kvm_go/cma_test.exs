@@ -100,13 +100,13 @@ defmodule NanoKVMGo.CMATest do
   end
 
   test "takes what the Go's 256 MiB leave", %{tmp_dir: tmp_dir} do
-    opts = [kv: KV, root: device_tree(tmp_dir, dram: 256, video: 144, npu_off: true)]
+    opts = [kv: KV, root: device_tree(tmp_dir, dram: 256, video: 128, npu_off: true)]
 
-    assert CMA.sizes(root: opts[:root]) == %{video: 144, npu: 0}
+    assert CMA.sizes(root: opts[:root]) == %{video: 128, npu: 0}
     assert CMA.persist_sizes(%{video: 168}, opts) == {:error, {:invalid_size, :video, 168}}
     assert CMA.persist_sizes(%{video: 144, npu: 24}, opts) == {:error, {:too_large, 168, 160}}
-    # The video pool left at the Go's 144 MiB.
-    assert CMA.persist_sizes(%{npu: 24}, opts) == {:error, {:too_large, 168, 160}}
+    # The video pool left at the Go's 128 MiB.
+    assert CMA.persist_sizes(%{npu: 40}, opts) == {:error, {:too_large, 168, 160}}
     assert :ok = CMA.persist_sizes(%{video: 128, npu: 32}, opts)
     assert %{"cma_video" => "128", "cma_npu" => "32"} = KV.env()
   end

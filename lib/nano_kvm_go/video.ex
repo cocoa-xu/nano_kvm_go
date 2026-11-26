@@ -70,6 +70,7 @@ defmodule NanoKVMGo.Video do
   alias NanoKVMGo.Video.Protocol
 
   @restart_delay 2_000
+  @max_restart_delay 60_000
   @default_encoding %{
     codec: :auto,
     rate_control: :vbr,
@@ -328,7 +329,9 @@ defmodule NanoKVMGo.Video do
       subscribers: %{},
       key_requested?: false,
       input: nil,
-      codec: nil
+      codec: nil,
+      started_at: nil,
+      restart_delay: nil
     }
 
     if File.regular?(config.program),
@@ -391,12 +394,17 @@ defmodule NanoKVMGo.Video do
     if Protocol.input_changed?(status) do
       Logger.info("nano_kvm_go: video input changed, restarting the capture")
       Process.send_after(self(), :start, @input_restart_delay)
+      {:noreply, stopped(state)}
     else
-      Logger.warning("nano_kvm_go: nano_kvm_go_video exited (#{status}), restarting")
-      Process.send_after(self(), :start, @restart_delay)
-    end
+      delay = next_restart_delay(state)
 
-    {:noreply, stopped(state)}
+      Logger.warning(
+        "nano_kvm_go: nano_kvm_go_video exited (#{status}), restarting in #{div(delay, 1000)} s"
+      )
+
+      Process.send_after(self(), :start, delay)
+      {:noreply, %{stopped(state) | restart_delay: delay}}
+    end
   end
 
   def handle_info(:start, state), do: {:noreply, start_program(state)}
@@ -512,6 +520,16 @@ defmodule NanoKVMGo.Video do
 
   defp program_encoding(state), do: %{state.config.encoding | codec: state.codec}
 
+  # A program that fails soon after it starts, as when the video pool cannot
+  # hold the input's buffers, starts again less and less often.
+  defp next_restart_delay(%{restart_delay: nil}), do: @restart_delay
+
+  defp next_restart_delay(%{started_at: started_at, restart_delay: delay}) do
+    if System.monotonic_time(:millisecond) - started_at >= @max_restart_delay,
+      do: @restart_delay,
+      else: min(delay * 2, @max_restart_delay)
+  end
+
   defp stopped(state) do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
     %{state | port: nil, subscribers: subscribers}
@@ -524,7 +542,14 @@ defmodule NanoKVMGo.Video do
       {:ok, devices} ->
         state = %{state | codec: stream_codec(state)}
         port = open_port(config, devices, program_encoding(state))
-        state = %{state | port: port, encoder?: devices.encoder != nil, key_requested?: false}
+        state = %{
+          state
+          | port: port,
+            encoder?: devices.encoder != nil,
+            key_requested?: false,
+            started_at: System.monotonic_time(:millisecond)
+        }
+
         if state.subscribers != %{}, do: command(state, :start_stream)
         state
 

@@ -17,10 +17,17 @@
   too, called each time the process starts: a restart by its supervisor
   takes the encoding saved last
 * The NanoKVM-Go with 256 MiB: `NanoKVMGo.Video` holds three capture
-  buffers with a video CMA pool under 176 MiB, as the Go's 144 MiB, and four
+  buffers with a video CMA pool under 176 MiB, as the Go's 128 MiB, and four
   otherwise (the `:capture_buffers` option); `NanoKVMGo.CMA` takes pools that
   leave Linux 96 MiB of the DRAM, as the system's U-Boot does, instead of
-  half of it, and `:default` stands for the board's sizes
+  half of it, and `:default` stands for the board's sizes, 128 MiB for video
+  on the Go
+* The encoders' output buffers hold a picture of one byte a pixel for JPEG
+  and half a byte for H.264 and H.265, instead of the driver's two: at 4K,
+  41 MB less of the video pool, which on the Go left the video encoder no
+  room for its references. A bigger picture is dropped
+* A `nano_kvm_go_video` that keeps exiting starts again after 2 s, then
+  twice as long each time up to a minute, instead of every 2 s
 * H.264 rate control in `NanoKVMGo.Video`: the `:encoding` option, and
   `set_encoding/2`, which changes it while the capture runs. A constant QP,
   a constant bitrate, or VBR: a QP, with a higher one where the bitrate

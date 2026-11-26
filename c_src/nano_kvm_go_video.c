@@ -23,8 +23,12 @@
  * KVM_ENCODING gives at the start: codec "h264" or "h265"; rate control
  * "cq" (a constant QP), "cbr" (a constant bitrate) or "vbr" (the QP, more
  * where the bitrate would go over); a keyframe interval in frames; a max
- * fps of 0 for the input's; the colour the stream declares, "auto", "bt601"
- * or "bt709" and "auto", "full" or "limited".
+ * fps of 0 for the input's; the colour, "auto", "bt601" or "bt709" and
+ * "auto", "full" or "limited". Where the capture converts the colour
+ * (V4L2_FMT_FLAG_CSC_*), the HDMI bridge does, "auto" being BT.601 at full
+ * range, JPEG's own; elsewhere the colour only labels what the bridge hands
+ * over, "auto" being that, BT.709 at full range. The streams and snapshots
+ * say what the samples are.
  *
  * KVM_CAPTURE_BUFFERS is how many frames the capture holds, 2 to MAX_CAP,
  * 4 without it: the encoders read them in place, so their memory and the
@@ -393,7 +397,7 @@ static const struct codec {
 	[CODEC_H265] = { "h265", "H.265", V4L2_PIX_FMT_HEVC_SLICE, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME },
 };
 
-/* What the stream says its samples are. */
+/* What the samples are. */
 struct colour {
 	int bt601, limited;
 };
@@ -415,7 +419,11 @@ static struct {
 
 /* What the encoding asks for: the encoder takes it when it next starts. */
 static int want_codec = CODEC_H264;
-static struct colour want_colour;
+
+/* The colour asked for, AUTO or 0 or 1, and what the samples are. */
+#define AUTO (-1)
+static int want_bt601 = AUTO, want_limited = AUTO, want_colour_changed;
+static struct colour colour;
 
 /* A snapshot asked for, of the next frame */
 static struct {
@@ -454,8 +462,7 @@ static int clamp_qp(int qp)
 
 /*
  * "<h264|h265> <cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>
- * <auto|bt601|bt709> <auto|full|limited>"; returns whether it was one. The
- * bridge hands over BT.709 at full range, which "auto" says.
+ * <auto|bt601|bt709> <auto|full|limited>"; returns whether it was one.
  */
 static int rc_set(const char *text)
 {
@@ -483,8 +490,9 @@ static int rc_set(const char *text)
 	else
 		return 0;
 	want_codec = c;
-	want_colour.bt601 = !strcmp(matrix, "bt601");
-	want_colour.limited = !strcmp(range, "limited");
+	want_bt601 = !strcmp(matrix, "auto") ? AUTO : !strcmp(matrix, "bt601");
+	want_limited = !strcmp(range, "auto") ? AUTO : !strcmp(range, "limited");
+	want_colour_changed = 1;
 	rc.bitrate = bitrate;
 	rc.qp_floor = rc.mode == RC_CBR ? QP_MIN : qp;
 	rc.qp_ceil = rc.mode == RC_CQ ? qp : QP_MAX;
@@ -493,10 +501,52 @@ static int rc_set(const char *text)
 	rc.debt = 0;
 	rc.qp = rc.mode == RC_CBR ? clamp_qp(rc.qp) : qp;
 	rc.key_qp = rc.mode == RC_CBR ? clamp_qp(rc.key_qp) : qp;
-	logline("%s: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most, %s, %s range",
-		codecs[c].label, mode, bitrate, qp, gop, max_fps,
-		want_colour.bt601 ? "BT.601" : "BT.709", want_colour.limited ? "limited" : "full");
+	logline("%s: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most, colour %s %s",
+		codecs[c].label, mode, bitrate, qp, gop, max_fps, matrix, range);
 	return 1;
+}
+
+/*
+ * Asks the capture for the colour wanted, which the HDMI bridge converts to
+ * where the capture says it can, and takes what the samples are from the
+ * format it gives back. Elsewhere the samples are what the bridge hands
+ * over, and the colour wanted only labels them.
+ */
+static void capture_colour(int cap, struct v4l2_format *cfmt)
+{
+	const unsigned int csc = V4L2_FMT_FLAG_CSC_YCBCR_ENC | V4L2_FMT_FLAG_CSC_QUANTIZATION;
+	struct v4l2_fmtdesc desc = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+	struct v4l2_format f = *cfmt;
+	enum v4l2_ycbcr_encoding enc;
+	enum v4l2_quantization quant;
+
+	want_colour_changed = 0;
+	if (xioctl(cap, VIDIOC_ENUM_FMT, &desc) || (desc.flags & csc) != csc) {
+		colour.bt601 = want_bt601 == 1;
+		colour.limited = want_limited == 1;
+		return;
+	}
+	f.fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
+	f.fmt.pix.flags = V4L2_PIX_FMT_FLAG_SET_CSC;
+	f.fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
+	f.fmt.pix.xfer_func = V4L2_XFER_FUNC_DEFAULT;
+	f.fmt.pix.ycbcr_enc = want_bt601 == 0 ? V4L2_YCBCR_ENC_709 : V4L2_YCBCR_ENC_601;
+	f.fmt.pix.quantization = want_limited == 1 ? V4L2_QUANTIZATION_LIM_RANGE :
+						     V4L2_QUANTIZATION_FULL_RANGE;
+	if (xioctl(cap, VIDIOC_S_FMT, &f)) {
+		logline("capture colour: %s", strerror(errno));
+		f = *cfmt;
+	} else {
+		*cfmt = f;
+	}
+	enc = f.fmt.pix.ycbcr_enc ? f.fmt.pix.ycbcr_enc :
+				    V4L2_MAP_YCBCR_ENC_DEFAULT(f.fmt.pix.colorspace);
+	quant = f.fmt.pix.quantization ? f.fmt.pix.quantization :
+					 V4L2_MAP_QUANTIZATION_DEFAULT(0, f.fmt.pix.colorspace, enc);
+	colour.bt601 = enc == V4L2_YCBCR_ENC_601;
+	colour.limited = quant == V4L2_QUANTIZATION_LIM_RANGE;
+	logline("capture colour: %s, %s range", colour.bt601 ? "BT.601" : "BT.709",
+		colour.limited ? "limited" : "full");
 }
 
 /* After each frame, from its size: the next frame's QP. */
@@ -618,8 +668,8 @@ static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2
 	o.fmt.pix_mp.num_planes = 1;
 	o.fmt.pix_mp.plane_fmt[0].bytesperline = cfmt->fmt.pix.bytesperline;
 	if (colour) {
-		o.fmt.pix_mp.colorspace = colour->bt601 ? V4L2_COLORSPACE_SMPTE170M :
-							  V4L2_COLORSPACE_REC709;
+		/* The bridge changes the matrix, not the source's primaries. */
+		o.fmt.pix_mp.colorspace = V4L2_COLORSPACE_REC709;
 		o.fmt.pix_mp.ycbcr_enc = colour->bt601 ? V4L2_YCBCR_ENC_601 : V4L2_YCBCR_ENC_709;
 		o.fmt.pix_mp.xfer_func = V4L2_XFER_FUNC_709;
 		o.fmt.pix_mp.quantization = colour->limited ? V4L2_QUANTIZATION_LIM_RANGE :
@@ -693,7 +743,7 @@ static void venc_start(void)
 	int i;
 
 	venc.codec = want_codec;
-	venc.colour = want_colour;
+	venc.colour = colour;
 	encoder_formats(venc.fd, codec->fourcc, &venc.cfmt, &venc.colour, codec->label);
 	parm.parm.output.timeperframe.numerator = 1;
 	parm.parm.output.timeperframe.denominator = venc.fps;
@@ -758,11 +808,11 @@ static void venc_stop(void)
 	venc.streaming = 0;
 }
 
-/* Whether the encoding asks for another codec or colour than the encoder's. */
+/* Whether the encoding asks for another codec, or the samples are another colour. */
 static int venc_changed(void)
 {
-	return want_codec != venc.codec || want_colour.bt601 != venc.colour.bt601 ||
-	       want_colour.limited != venc.colour.limited;
+	return want_codec != venc.codec || colour.bt601 != venc.colour.bt601 ||
+	       colour.limited != venc.colour.limited;
 }
 
 /* Whether a frame may go in now, at most max fps. */
@@ -902,7 +952,7 @@ static uint8_t clamp8(int v)
 
 /*
  * Sends the snapshot asked for from a captured frame (YUYV or UYVY, in the
- * DMA-BUF fd) as RGB, in the colours the stream declares: an empty one when
+ * DMA-BUF fd) as RGB, in the colours the streams declare: an empty one when
  * the region is outside the picture.
  */
 static void send_snapshot(int fd, const struct v4l2_format *f)
@@ -915,9 +965,9 @@ static void send_snapshot(int fd, const struct v4l2_format *f)
 		{ { 403, 48, 120, 475 }, { 359, 88, 183, 454 } },
 		{ { 459, 55, 136, 541 }, { 409, 100, 208, 516 } },
 	};
-	const int *c = k[want_colour.limited][want_colour.bt601];
+	const int *c = k[colour.limited][colour.bt601];
 	int cr_r = c[0], cb_g = c[1], cr_g = c[2], cb_b = c[3];
-	int yoff = want_colour.limited ? 16 : 0, yscale = want_colour.limited ? 298 : 256;
+	int yoff = colour.limited ? 16 : 0, yscale = colour.limited ? 298 : 256;
 	int luma0 = fourcc == V4L2_PIX_FMT_UYVY;
 	size_t map_len = (size_t)stride * height;
 	uint8_t *src = MAP_FAILED, *out = NULL, *o;
@@ -1134,6 +1184,7 @@ int main(int argc, char **argv)
 	fps = select_input(cap);
 	if (xioctl(cap, VIDIOC_G_FMT, &cfmt))
 		die("G_FMT capture");
+	capture_colour(cap, &cfmt);
 	logline("capture %ux%u stride %u size %u", cfmt.fmt.pix.width, cfmt.fmt.pix.height,
 	       cfmt.fmt.pix.bytesperline, cfmt.fmt.pix.sizeimage);
 	bufsize = cfmt.fmt.pix.sizeimage;
@@ -1152,7 +1203,7 @@ int main(int argc, char **argv)
 		rc.fps = fps ? fps : 30;
 		venc_open(venc_dev);
 		/* Both codecs take the same raw format. */
-		raw = encoder_formats(venc.fd, codecs[want_codec].fourcc, &cfmt, &want_colour,
+		raw = encoder_formats(venc.fd, codecs[want_codec].fourcc, &cfmt, &colour,
 				      codecs[want_codec].label);
 		if (raw.fmt.pix_mp.plane_fmt[0].sizeimage > bufsize)
 			bufsize = raw.fmt.pix_mp.plane_fmt[0].sizeimage;
@@ -1297,8 +1348,12 @@ int main(int argc, char **argv)
 			venc.request_busy = 0;
 		}
 
-		if (pfd[5].revents & (POLLIN | POLLHUP))
+		if (pfd[5].revents & (POLLIN | POLLHUP)) {
 			venc_commands();
+			/* The capture streams on: the bridge changes over at once. */
+			if (want_colour_changed)
+				capture_colour(cap, &cfmt);
+		}
 
 		if (pfd[1].revents & POLLIN) {
 			struct v4l2_plane plane = { 0 };

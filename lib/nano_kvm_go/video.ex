@@ -126,17 +126,21 @@ defmodule NanoKVMGo.Video do
     * `:keyframe_interval` - frames from a keyframe to the next, unless one
       is asked for sooner
     * `:max_fps` - frames a second at most, 0 for as many as the input has
-    * `:color_matrix` - the matrix the stream says turns its samples into
-      RGB, `:bt601` or `:bt709`
-    * `:color_range` - whether the stream says its samples use the `:full`
-      range or the `:limited` one
+    * `:color_matrix` - the matrix that turns the samples into RGB,
+      `:bt601` or `:bt709`
+    * `:color_range` - whether the samples use the `:full` range or the
+      `:limited` one
 
   The bitrate a still picture takes is low whatever the rate control: CBR
   and VBR save no bits for later.
 
-  The colour only labels the samples, as the HDMI bridge hands them over;
-  `:auto` gives what it hands over, BT.709 at full range. Another label
-  shifts the colours a decoder shows.
+  Where the capture converts the colour (the system's HDMI bridge driver
+  from linux-ax620e 4bd74a0 on), the bridge turns the picture into the
+  colour asked for, and the streams and snapshots carry it: `:auto` is
+  BT.601 at full range, which JPEG decoders take for granted, so the MJPEG
+  stream shows the colours right as well. Elsewhere the colour only labels
+  the samples as the bridge hands them over: `:auto` is that, BT.709 at full
+  range, and another label shifts the colours a decoder shows.
   """
   @type encoding() :: %{
           codec: :auto | :h264 | :h265,
@@ -252,7 +256,7 @@ defmodule NanoKVMGo.Video do
   @doc """
   A region of the next captured picture, `{x, y, width, height}` in the
   input's pixels, or the whole of it, as RGB: three bytes a pixel, rows top
-  to bottom, in the colours the stream declares. A region partly outside the
+  to bottom, in the colours the streams declare. A region partly outside the
   picture is cut to it, one outside gives an empty picture.
 
   `{:error, :no_input}` without a picture to take it from, `:timeout` when

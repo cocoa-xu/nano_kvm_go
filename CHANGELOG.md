@@ -3,8 +3,15 @@
 ## Unreleased
 
 * `NanoKVMGo.Video.snapshot/3`: a region of the next captured picture, or
-  all of it, as RGB in the colours the stream declares, for reading the text
+  all of it, as RGB in the colours the streams declare, for reading the text
   in it and the like
+* The encoding's `:color_matrix` and `:color_range` set the colour the HDMI
+  bridge turns the picture into, where the capture can convert it (the
+  system's bridge driver from linux-ax620e 4bd74a0 on), instead of only
+  labelling the samples: `:auto` is BT.601 at full range, what JPEG
+  decoders assume, so the MJPEG stream shows the colours right too. The
+  H.264 and H.265 streams declare BT.709 primaries whatever the matrix
+  (BT.601 declared SMPTE 170M's)
 
 ## v0.3.0 (2026-11-27)
 

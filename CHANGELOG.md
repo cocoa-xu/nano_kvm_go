@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-11-27)
 
 * H.265 from `NanoKVMGo.Video` as well as H.264: the encoding's `:codec`,
   `:auto` by default, takes H.265 while every subscriber decodes it.

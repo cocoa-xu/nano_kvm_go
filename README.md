@@ -34,7 +34,7 @@ libraries.
 ```elixir
 def deps do
   [
-    {:nano_kvm_go, github: "cocoa-xu/nano_kvm_go", tag: "v0.2.1"}
+    {:nano_kvm_go, github: "cocoa-xu/nano_kvm_go", tag: "v0.3.0"}
   ]
 end
 ```
@@ -45,7 +45,7 @@ with the USB gadget of
 takes the board's settings from `NanoKVMGo.USB.gadget_options/1`:
 
 ```elixir
-{:kuroneko_gadget, github: "cocoa-xu/kuroneko_gadget", tag: "v0.3.0"}
+{:kuroneko_gadget, github: "cocoa-xu/kuroneko_gadget", tag: "v0.4.0"}
 ```
 
 The programs (`nano_kvm_go_video`, `nano_kvm_go_audio`,

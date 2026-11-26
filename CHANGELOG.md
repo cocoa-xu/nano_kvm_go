@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+* `NanoKVMGo.Video.snapshot/3`: a region of the next captured picture, or
+  all of it, as RGB in the colours the stream declares, for reading the text
+  in it and the like
+
 ## v0.3.0 (2026-11-27)
 
 * H.265 from `NanoKVMGo.Video` as well as H.264: the encoding's `:codec`,

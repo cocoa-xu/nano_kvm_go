@@ -542,6 +542,7 @@ defmodule NanoKVMGo.Video do
       {:ok, devices} ->
         state = %{state | codec: stream_codec(state)}
         port = open_port(config, devices, program_encoding(state))
+
         state = %{
           state
           | port: port,

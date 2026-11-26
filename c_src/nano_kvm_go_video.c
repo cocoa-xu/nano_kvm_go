@@ -526,10 +526,12 @@ static void capture_colour(int cap, struct v4l2_format *cfmt)
 		colour.limited = want_limited == 1;
 		return;
 	}
+	/*
+	 * The colour space stays the capture's: with the default one V4L2
+	 * drops the encoding and the range asked for (v4l_sanitize_colorspace).
+	 */
 	f.fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 	f.fmt.pix.flags = V4L2_PIX_FMT_FLAG_SET_CSC;
-	f.fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
-	f.fmt.pix.xfer_func = V4L2_XFER_FUNC_DEFAULT;
 	f.fmt.pix.ycbcr_enc = want_bt601 == 0 ? V4L2_YCBCR_ENC_709 : V4L2_YCBCR_ENC_601;
 	f.fmt.pix.quantization = want_limited == 1 ? V4L2_QUANTIZATION_LIM_RANGE :
 						     V4L2_QUANTIZATION_FULL_RANGE;

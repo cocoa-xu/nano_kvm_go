@@ -594,6 +594,13 @@ static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2
 	c.fmt.pix_mp.height = h;
 	c.fmt.pix_mp.pixelformat = coded;
 	c.fmt.pix_mp.num_planes = 1;
+	/*
+	 * Not the driver's default of two bytes a pixel, 16.6 MB a buffer at
+	 * 4K: on the Go that leaves the video encoder no CMA for its
+	 * references. A picture bigger than this comes back with
+	 * V4L2_BUF_FLAG_ERROR, as the encoders stop at the buffer's end.
+	 */
+	c.fmt.pix_mp.plane_fmt[0].sizeimage = coded == V4L2_PIX_FMT_JPEG ? w * h : w * h / 2;
 	if (xioctl(fd, VIDIOC_S_FMT, &c))
 		die("S_FMT encoder capture");
 	o.fmt.pix_mp.width = w;
@@ -617,9 +624,9 @@ static struct v4l2_format encoder_formats(int fd, __u32 coded, const struct v4l2
 		if (xioctl(fd, VIDIOC_S_SELECTION, &sel))
 			die("crop");
 	}
-	logline("%s: %ux%u in %ux%u, stride %u, size %u", name, w, h, o.fmt.pix_mp.width,
+	logline("%s: %ux%u in %ux%u, stride %u, size %u, coded %u", name, w, h, o.fmt.pix_mp.width,
 		o.fmt.pix_mp.height, o.fmt.pix_mp.plane_fmt[0].bytesperline,
-		o.fmt.pix_mp.plane_fmt[0].sizeimage);
+		o.fmt.pix_mp.plane_fmt[0].sizeimage, c.fmt.pix_mp.plane_fmt[0].sizeimage);
 	if (o.fmt.pix_mp.plane_fmt[0].bytesperline != cfmt->fmt.pix.bytesperline)
 		logline("%s: stride %u differs from the capture's %u: the picture will be skewed",
 			name, o.fmt.pix_mp.plane_fmt[0].bytesperline, cfmt->fmt.pix.bytesperline);

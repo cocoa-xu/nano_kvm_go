@@ -16,6 +16,12 @@ defmodule NanoKVMGo.Video.ProtocolTest do
     assert Protocol.decode(<<3, "none">>) == {:input, :none}
     assert Protocol.decode(<<3, "unsupported">>) == {:input, :unsupported}
     assert Protocol.decode(<<3, "3840x2160">>) == :unknown
+
+    assert Protocol.decode(<<6, 2::16, 1::16, "RGBrgb">>) ==
+             {:snapshot, %{width: 2, height: 1, data: "RGBrgb"}}
+
+    assert Protocol.decode(<<6, 0::16, 0::16>>) == {:snapshot, %{width: 0, height: 0, data: ""}}
+    assert Protocol.decode(<<6, 2::16, 2::16, "RGBrgb">>) == :unknown
     assert Protocol.decode(<<9, "?">>) == :unknown
     assert Protocol.decode(<<>>) == :unknown
   end
@@ -31,6 +37,7 @@ defmodule NanoKVMGo.Video.ProtocolTest do
     assert Protocol.command(:start_stream) == "1"
     assert Protocol.command(:stop_stream) == "0"
     assert Protocol.command(:keyframe) == "k"
+    assert Protocol.command({:snapshot, {10, 20, 300, 40}}) == "s 10 20 300 40"
 
     encoding = %{
       codec: :h265,

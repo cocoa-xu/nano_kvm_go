@@ -11,7 +11,8 @@ defmodule NanoKVMGo.VideoTest do
 
   # Stands in for nano_kvm_go_video: reports an input, then reports each
   # command it gets as an event and answers the stream commands ("1" start,
-  # "k" keyframe) with {:packet, 4} frames, until its stdin ends. A command
+  # "k" keyframe) and snapshots ("s ...", a 2x1 picture) with {:packet, 4}
+  # frames, until its stdin ends. A command
   # is {:packet, 4} framed too: a 4-byte length, then the command. The
   # shell's own printf would leave what it failed to write, once the port is
   # gone, to the command substitution, which would then loop forever.
@@ -26,6 +27,7 @@ defmodule NanoKVMGo.VideoTest do
     case "$command" in
       1) env printf '\\000\\000\\000\\004\\002KEY\\000\\000\\000\\004\\001DEL' ;;
       k) env printf '\\000\\000\\000\\004\\002KEY' ;;
+      s*) env printf '\\000\\000\\000\\013\\006\\000\\002\\000\\001RGBrgb' ;;
     esac
   done
   """
@@ -107,6 +109,30 @@ defmodule NanoKVMGo.VideoTest do
 
     assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: []) end
     assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: [:vp9]) end
+  end
+
+  test "takes snapshots of the picture or a region of it", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    assert :ok = Video.subscribe(video)
+    assert_receive {Video, {:input, %{width: 1920, height: 1080}}}
+
+    assert Video.snapshot(video, {2, 1, 2, 1}) == {:ok, %{width: 2, height: 1, data: "RGBrgb"}}
+    assert_receive {FakeProgram, "command s 2 1 2 1"}
+    assert {:ok, %{width: 2, height: 1}} = Video.snapshot(video)
+    assert_receive {FakeProgram, "command s 0 0 1920 1080"}
+  end
+
+  test "takes no snapshot without a picture or an answer", %{tmp_dir: tmp_dir} do
+    # Without its first two lines the program reports no input.
+    [_header, _input, no_input] = String.split(@fake, "\n", parts: 3)
+    {video, _program} = start_video(tmp_dir, fake: no_input)
+    assert Video.snapshot(video) == {:error, :no_input}
+    stop_supervised!(Video)
+
+    {video, _program} = start_video(tmp_dir, fake: String.replace(@fake, "s*)", "s_*)"))
+    assert :ok = Video.subscribe(video)
+    assert_receive {Video, {:input, %{width: 1920}}}
+    assert Video.snapshot(video, :all, 100) == {:error, :timeout}
   end
 
   test "tells a subscriber the input once it is known", %{tmp_dir: tmp_dir} do

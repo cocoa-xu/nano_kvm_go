@@ -13,8 +13,10 @@
  * With KVM_PORT set (run as an Erlang port), stdout carries {packet, 4}
  * frames [type][payload] (type 0 log line, 1 H.264 access unit, 2 H.264
  * keyframe, 3 input: "<width>x<height>@<fps>", "none" or "unsupported",
- * 4 H.265 access unit, 5 H.265 keyframe), stdin takes {packet, 4} commands
- * and its end stops the program. With KVM_ENCODER_DEV=<video encoder
+ * 4 H.265 access unit, 5 H.265 keyframe, 6 snapshot: big-endian 16-bit width
+ * and height, then RGB), stdin takes {packet, 4} commands and its end stops
+ * the program: "s <x> <y> <width> <height>" asks for a snapshot of that
+ * region of the next frame, in the input's pixels. With KVM_ENCODER_DEV=<video encoder
  * device> as well, the commands are "1" start the video stream, "0" stop,
  * "k" make the next frame an IDR, and "e <codec> <rate control> <bit/s> <QP>
  * <keyframe interval> <max fps> <matrix> <range>" the encoding, which
@@ -37,6 +39,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/media.h>
+#include <linux/dma-buf.h>
 #include <linux/videodev2.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -72,7 +75,7 @@ static int xioctl(int fd, unsigned long req, void *arg)
 	return r;
 }
 
-enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME };
+enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME, PKT_SNAPSHOT };
 
 static int packet_mode;
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -413,6 +416,12 @@ static struct {
 /* What the encoding asks for: the encoder takes it when it next starts. */
 static int want_codec = CODEC_H264;
 static struct colour want_colour;
+
+/* A snapshot asked for, of the next frame */
+static struct {
+	int pending;
+	unsigned int x, y, width, height;
+} snap;
 static unsigned long venc_bytes;	/* sent since the last statistics */
 
 /*
@@ -876,7 +885,88 @@ static void venc_command(const char *c, size_t len)
 		text[len - 2] = 0;
 		if (!rc_set(text))
 			logline("not an encoding: %s", text);
+	} else if (len > 2 && len < sizeof(text) && c[0] == 's' && c[1] == ' ') {
+		memcpy(text, c + 2, len - 2);
+		text[len - 2] = 0;
+		if (sscanf(text, "%u %u %u %u", &snap.x, &snap.y, &snap.width, &snap.height) == 4)
+			snap.pending = 1;
+		else
+			logline("not a snapshot region: %s", text);
 	}
+}
+
+static uint8_t clamp8(int v)
+{
+	return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+/*
+ * Sends the snapshot asked for from a captured frame (YUYV or UYVY, in the
+ * DMA-BUF fd) as RGB, in the colours the stream declares: an empty one when
+ * the region is outside the picture.
+ */
+static void send_snapshot(int fd, const struct v4l2_format *f)
+{
+	unsigned int width = f->fmt.pix.width, height = f->fmt.pix.height;
+	unsigned int stride = f->fmt.pix.bytesperline, fourcc = f->fmt.pix.pixelformat;
+	unsigned int x = snap.x & ~1u, y = snap.y, w = 0, h = 0, row, col;
+	/* Y'CbCr to R'G'B' in 1/256: Cr to R, Cb to G, Cr to G, Cb to B; [limited][bt601] */
+	static const int k[2][2][4] = {
+		{ { 403, 48, 120, 475 }, { 359, 88, 183, 454 } },
+		{ { 459, 55, 136, 541 }, { 409, 100, 208, 516 } },
+	};
+	const int *c = k[want_colour.limited][want_colour.bt601];
+	int cr_r = c[0], cb_g = c[1], cr_g = c[2], cb_b = c[3];
+	int yoff = want_colour.limited ? 16 : 0, yscale = want_colour.limited ? 298 : 256;
+	int luma0 = fourcc == V4L2_PIX_FMT_UYVY;
+	size_t map_len = (size_t)stride * height;
+	uint8_t *src = MAP_FAILED, *out = NULL, *o;
+	struct dma_buf_sync sync = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
+
+	snap.pending = 0;
+	if (fourcc == V4L2_PIX_FMT_YUYV || fourcc == V4L2_PIX_FMT_UYVY) {
+		if (x < width && y < height) {
+			w = (snap.width < width - x ? snap.width : width - x) & ~1u;
+			h = snap.height < height - y ? snap.height : height - y;
+		}
+	} else {
+		logline("snapshot: not a YUYV or UYVY capture");
+	}
+	out = malloc(4 + (size_t)w * h * 3);
+	if (!out)
+		die("snapshot: out of memory");
+	out[0] = w >> 8, out[1] = w, out[2] = h >> 8, out[3] = h;
+	if (w && h) {
+		src = mmap(NULL, map_len, PROT_READ, MAP_SHARED, fd, 0);
+		if (src == MAP_FAILED) {
+			logline("snapshot: mmap: %s", strerror(errno));
+			w = h = 0;
+			out[0] = out[1] = out[2] = out[3] = 0;
+		} else {
+			ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+		}
+	}
+	o = out + 4;
+	for (row = 0; row < h && w; row++) {
+		const uint8_t *p = src + (size_t)(y + row) * stride + (size_t)x * 2;
+
+		for (col = 0; col < w; col += 2, p += 4) {
+			int y0 = p[luma0 ? 1 : 0], y1 = p[luma0 ? 3 : 2];
+			int cb = p[luma0 ? 0 : 1] - 128, cr = p[luma0 ? 2 : 3] - 128;
+			int r = cr_r * cr, g = -cb_g * cb - cr_g * cr, b = cb_b * cb;
+			int l0 = (y0 - yoff) * yscale, l1 = (y1 - yoff) * yscale;
+
+			*o++ = clamp8((l0 + r) >> 8), *o++ = clamp8((l0 + g) >> 8), *o++ = clamp8((l0 + b) >> 8);
+			*o++ = clamp8((l1 + r) >> 8), *o++ = clamp8((l1 + g) >> 8), *o++ = clamp8((l1 + b) >> 8);
+		}
+	}
+	if (src != MAP_FAILED) {
+		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+		ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+		munmap(src, map_len);
+	}
+	write_packet(PKT_SNAPSHOT, out, 4 + (size_t)w * h * 3);
+	free(out);
 }
 
 static void venc_commands(void)
@@ -1280,6 +1370,8 @@ int main(int argc, char **argv)
 				int refs = 0;
 
 				ncaptured++;
+				if (snap.pending)
+					send_snapshot(dmabuf[buf.index], &cfmt);
 				captured++;
 				if ((out || __atomic_load_n(&nclients, __ATOMIC_RELAXED)) &&
 				    enc_busy < 0) {

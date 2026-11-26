@@ -8,6 +8,7 @@ defmodule NanoKVMGo.Video.Protocol do
           {:log, String.t()}
           | {:h264 | :h265, :key | :delta, binary()}
           | {:input, NanoKVMGo.Video.input()}
+          | {:snapshot, NanoKVMGo.Video.snapshot()}
           | :unknown
 
   @exit_input_changed 3
@@ -18,6 +19,9 @@ defmodule NanoKVMGo.Video.Protocol do
   def decode(<<2, au::binary>>), do: {:h264, :key, au}
   def decode(<<4, au::binary>>), do: {:h265, :delta, au}
   def decode(<<5, au::binary>>), do: {:h265, :key, au}
+
+  def decode(<<6, width::16, height::16, rgb::binary>>) when byte_size(rgb) == width * height * 3,
+    do: {:snapshot, %{width: width, height: height, data: rgb}}
 
   def decode(<<3, text::binary>>) do
     case parse_input(text) do
@@ -33,11 +37,13 @@ defmodule NanoKVMGo.Video.Protocol do
           | :stop_stream
           | :keyframe
           | {:encoding, NanoKVMGo.Video.encoding()}
+          | {:snapshot, NanoKVMGo.Video.region()}
         ) :: String.t()
   def command(:start_stream), do: "1"
   def command(:stop_stream), do: "0"
   def command(:keyframe), do: "k"
   def command({:encoding, encoding}), do: "e " <> encoding(encoding)
+  def command({:snapshot, {x, y, width, height}}), do: "s #{x} #{y} #{width} #{height}"
 
   # "<h264|h265> <cq|cbr|vbr> <bit/s> <QP> <keyframe interval> <max fps>
   # <auto|bt601|bt709> <auto|full|limited>"

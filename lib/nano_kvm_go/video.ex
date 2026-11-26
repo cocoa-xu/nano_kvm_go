@@ -70,6 +70,7 @@ defmodule NanoKVMGo.Video do
   alias NanoKVMGo.Video.Protocol
 
   @restart_delay 2_000
+  @snapshot_timeout 5_000
   @max_restart_delay 60_000
   @default_encoding %{
     codec: :auto,
@@ -93,6 +94,13 @@ defmodule NanoKVMGo.Video do
           %{width: pos_integer(), height: pos_integer(), fps: non_neg_integer()}
           | :none
           | :unsupported
+
+  @typedoc "A rectangle of the input's pixels: `{x, y, width, height}`."
+  @type region() ::
+          {non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}
+
+  @typedoc "A picture of `snapshot/3`: RGB, three bytes a pixel, rows top to bottom."
+  @type snapshot() :: %{width: non_neg_integer(), height: non_neg_integer(), data: binary()}
 
   @typedoc """
   The video devices: the capture's, the JPEG encoder's and, for the stream,
@@ -242,6 +250,23 @@ defmodule NanoKVMGo.Video do
   def request_keyframe(server \\ __MODULE__), do: GenServer.cast(server, :keyframe)
 
   @doc """
+  A region of the next captured picture, `{x, y, width, height}` in the
+  input's pixels, or the whole of it, as RGB: three bytes a pixel, rows top
+  to bottom, in the colours the stream declares. A region partly outside the
+  picture is cut to it, one outside gives an empty picture.
+
+  `{:error, :no_input}` without a picture to take it from, `:timeout` when
+  none came within `timeout` milliseconds, `:stopped` when the capture
+  stopped first.
+  """
+  @spec snapshot(GenServer.server(), region() | :all, timeout()) ::
+          {:ok, snapshot()} | {:error, :no_input | :timeout | :stopped}
+  def snapshot(server \\ __MODULE__, region \\ :all, timeout \\ @snapshot_timeout)
+      when region == :all or tuple_size(region) == 4 do
+    GenServer.call(server, {:snapshot, region, timeout}, timeout + 1_000)
+  end
+
+  @doc """
   The current input, `nil` until known.
   """
   @spec input(GenServer.server()) :: input() | nil
@@ -331,7 +356,8 @@ defmodule NanoKVMGo.Video do
       input: nil,
       codec: nil,
       started_at: nil,
-      restart_delay: nil
+      restart_delay: nil,
+      snapshots: []
     }
 
     if File.regular?(config.program),
@@ -371,6 +397,19 @@ defmodule NanoKVMGo.Video do
 
   def handle_call(:input, _from, state), do: {:reply, state.input, state}
 
+  def handle_call({:snapshot, region, timeout}, from, state) do
+    case {state.port, state.input} do
+      {port, %{width: width, height: height}} when port != nil ->
+        region = if region == :all, do: {0, 0, width, height}, else: region
+        if state.snapshots == [], do: command(state, {:snapshot, region})
+        timer = Process.send_after(self(), {:snapshot_timeout, from}, timeout)
+        {:noreply, %{state | snapshots: [{from, timer} | state.snapshots]}}
+
+      _ ->
+        {:reply, {:error, :no_input}, state}
+    end
+  end
+
   def handle_call(:encoding, _from, state), do: {:reply, state.config.encoding, state}
 
   def handle_call(:codec, _from, state), do: {:reply, state.codec, state}
@@ -409,6 +448,12 @@ defmodule NanoKVMGo.Video do
 
   def handle_info(:start, state), do: {:noreply, start_program(state)}
 
+  def handle_info({:snapshot_timeout, from}, state) do
+    {timed_out, waiting} = Enum.split_with(state.snapshots, fn {f, _timer} -> f == from end)
+    Enum.each(timed_out, fn {f, _timer} -> GenServer.reply(f, {:error, :timeout}) end)
+    {:noreply, %{state | snapshots: waiting}}
+  end
+
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, drop_subscriber(state, pid)}
   end
@@ -444,7 +489,17 @@ defmodule NanoKVMGo.Video do
     end
   end
 
+  defp handle_packet({:snapshot, picture}, state), do: reply_snapshots(state, {:ok, picture})
   defp handle_packet(:unknown, state), do: state
+
+  defp reply_snapshots(state, reply) do
+    Enum.each(state.snapshots, fn {from, timer} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, reply)
+    end)
+
+    %{state | snapshots: []}
+  end
 
   # Keyframes go to everyone; deltas only to subscribers that have the
   # stream's state and keep up.
@@ -532,7 +587,7 @@ defmodule NanoKVMGo.Video do
 
   defp stopped(state) do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
-    %{state | port: nil, subscribers: subscribers}
+    reply_snapshots(%{state | port: nil, subscribers: subscribers}, {:error, :stopped})
   end
 
   defp start_program(state) do

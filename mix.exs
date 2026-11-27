@@ -105,6 +105,10 @@ defmodule NanoKVMGo.MixProject do
           NanoKVMGo.Touch,
           NanoKVMGo.Button
         ],
+        Bluetooth: [
+          NanoKVMGo.Bluetooth,
+          NanoKVMGo.Bluetooth.HID
+        ],
         "The device": [
           NanoKVMGo.Hardware,
           NanoKVMGo.Metrics,

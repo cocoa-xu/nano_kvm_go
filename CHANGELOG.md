@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* `NanoKVMGo.Bluetooth`: BlueZ for the controller in the AIC8800 Wi-Fi chip,
+  with the system's D-Bus and bluetoothd started under MuonTrap (the Nerves
+  system with BlueZ): the controller's state, the devices it knows, pairing
+  that other devices get only while it is open, and scanning, pairing,
+  connecting and forgetting devices. It talks to BlueZ through a D-Bus
+  client of its own, in Elixir
+* `NanoKVMGo.Bluetooth.HID`: the board as a Bluetooth LE HID device (HID
+  over GATT), whatever its report map says; a host that pairs gets its
+  input reports, which need an encrypted link to be read or subscribed to
 * `NanoKVMGo.Video.snapshot/3`: a region of the next captured picture, or
   all of it, as RGB in the colours the streams declare, for reading the text
   in it and the like

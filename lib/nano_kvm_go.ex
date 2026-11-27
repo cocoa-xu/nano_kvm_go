@@ -14,6 +14,8 @@ defmodule NanoKVMGo do
     * `NanoKVMGo.Display`, `NanoKVMGo.Backlight`, `NanoKVMGo.Touch`,
       `NanoKVMGo.Button` - the LCD, its touch panel and the BOOT button
     * `NanoKVMGo.Expansion` - the two lines of the auxiliary USB-C port
+    * `NanoKVMGo.Bluetooth` - BlueZ for the controller in the Wi-Fi chip,
+      and `NanoKVMGo.Bluetooth.HID`, the board as a Bluetooth LE HID device
     * `NanoKVMGo.Hardware` - the board, its parts and drivers, its storage
     * `NanoKVMGo.Metrics` - CPU, memory, temperature and network each second
     * `NanoKVMGo.CMA` - the memory pools of video and the NPU, for the next

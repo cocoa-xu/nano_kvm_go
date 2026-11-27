@@ -20,6 +20,9 @@ The hardware of the Sipeed NanoKVM-Go for Elixir, on its Nerves system
   its backlight, touches, and the BOOT button
 * **Expansion lines** - the two lines of the auxiliary USB-C port, off until
   you make them a UART, GPIOs, PWM outputs or an I2C bus
+* **Bluetooth** - BlueZ for the controller in the Wi-Fi chip: pairing only
+  while you open it, the devices it knows, and the board as a Bluetooth LE
+  keyboard, mouse or other HID device
 * **Temperature** - of the SoC, from its on-die sensor
 * **The device itself** - its board, parts and drivers, microSD card and
   partitions, and what it is doing each second: CPU, memory, temperature,
@@ -229,6 +232,29 @@ NanoKVMGo.USB.default_network_addresses("0123456789abcdef")
 # Now and at the next boots; :default goes back to the address made from the serial number.
 :ok = Kuroneko.Gadget.set_network_addresses(host_address: "02:12:34:56:78:9a")
 :ok = Kuroneko.Gadget.set_network_addresses(host_address: :default)
+```
+
+## Bluetooth
+
+`NanoKVMGo.Bluetooth` starts the system's D-Bus and bluetoothd (the Nerves
+system with BlueZ) and talks to BlueZ over D-Bus. Other devices pair only
+while pairing is open; pairings stay on the data partition.
+`NanoKVMGo.Bluetooth.HID` makes the board a Bluetooth LE HID device that a
+phone, tablet or computer pairs with, here a keyboard:
+
+```elixir
+children = [
+  {NanoKVMGo.Bluetooth, name: "Kuroneko"},
+  {NanoKVMGo.Bluetooth.HID,
+   report_map: NanoKVMGo.Bluetooth.HID.with_report_id(keyboard_descriptor, 1),
+   inputs: [keyboard: {1, 8}],
+   appearance: 0x03C1}
+]
+
+:ok = NanoKVMGo.Bluetooth.open_pairing(120)
+# Once a host paired and listens: "a", then nothing held
+NanoKVMGo.Bluetooth.HID.report(:keyboard, <<0, 0, 0x04, 0, 0, 0, 0, 0>>)
+NanoKVMGo.Bluetooth.HID.report(:keyboard, <<0::64>>)
 ```
 
 ## Memory for video and the NPU

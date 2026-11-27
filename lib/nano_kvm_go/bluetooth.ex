@@ -32,6 +32,7 @@ defmodule NanoKVMGo.Bluetooth do
   @bus NanoKVMGo.Bluetooth.Bus
   @socket "/run/dbus/system_bus_socket"
   @storage "/data/bluetooth"
+  @state_dir "/var/lib/bluetooth"
 
   @typedoc "A Bluetooth address, `\"AA:BB:CC:DD:EE:FF\"`."
   @type address() :: String.t()
@@ -62,7 +63,7 @@ defmodule NanoKVMGo.Bluetooth do
 
   @impl Supervisor
   def init(opts) do
-    File.mkdir_p!(@storage)
+    :ok = bind_storage()
 
     children = [
       daemon(:dbus, "dbus-daemon", ["--system", "--nofork", "--nopidfile"], []),
@@ -72,6 +73,21 @@ defmodule NanoKVMGo.Bluetooth do
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  # BlueZ keeps its pairings in /var/lib/bluetooth, on the read-only root
+  # file system: the data partition's directory goes there.
+  defp bind_storage do
+    File.mkdir_p!(@storage)
+
+    if File.read!("/proc/mounts") =~ " #{@state_dir} " do
+      :ok
+    else
+      case System.cmd("mount", ["-o", "bind", @storage, @state_dir], stderr_to_stdout: true) do
+        {_output, 0} -> :ok
+        {output, _status} -> {:error, String.trim(output)}
+      end
+    end
   end
 
   defp daemon(id, command, args, opts) do

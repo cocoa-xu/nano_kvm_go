@@ -80,7 +80,7 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
   def handle_call({:open_pairing, seconds, discoverable?}, _from, state) do
     with :ok <- set(state, "Pairable", {"b", true}),
          :ok <- if(discoverable?, do: discoverable(state, seconds), else: :ok) do
-      if state.pairing, do: Process.cancel_timer(state.pairing)
+      _ = if state.pairing, do: Process.cancel_timer(state.pairing)
       timer = Process.send_after(self(), :close_pairing, seconds * 1000)
       {:reply, :ok, notify_adapter(%{state | pairing: timer})}
     else
@@ -113,12 +113,13 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
       path ->
         bus = state.bus
 
-        Task.start(fn ->
-          GenServer.reply(
-            from,
-            ok(DBus.call(bus, @bluez, path, @device_iface, method, "", [], 80_000))
-          )
-        end)
+        _ =
+          Task.start(fn ->
+            GenServer.reply(
+              from,
+              ok(DBus.call(bus, @bluez, path, @device_iface, method, "", [], 80_000))
+            )
+          end)
 
         {:noreply, state}
     end
@@ -195,7 +196,7 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
   end
 
   defp close(state) do
-    if state.pairing, do: Process.cancel_timer(state.pairing)
+    _ = if state.pairing, do: Process.cancel_timer(state.pairing)
     state = %{state | pairing: nil}
 
     result =
@@ -270,8 +271,9 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
 
   defp signal(state, %{member: "PropertiesChanged", path: path, body: [@device_iface, changed, _]})
        when is_map_key(state.devices, path) do
-    if changed["Paired"] == true and state.pairing,
-      do: set(state, path, @device_iface, "Trusted", {"b", true})
+    _ =
+      if changed["Paired"] == true and state.pairing,
+        do: set(state, path, @device_iface, "Trusted", {"b", true})
 
     update_device(state, path, changed)
   end

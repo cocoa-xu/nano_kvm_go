@@ -125,7 +125,7 @@ defmodule NanoKVMGo.Bluetooth.HID do
 
   @impl GenServer
   def handle_continue(:register, state) do
-    register(state)
+    _ = register(state)
     {:noreply, state}
   end
 
@@ -161,14 +161,14 @@ defmodule NanoKVMGo.Bluetooth.HID do
   end
 
   def handle_info(:register, state) do
-    register(state)
+    _ = register(state)
     {:noreply, state}
   end
 
   def handle_info({NanoKVMGo.Bluetooth, {:adapter, %{pairing: pairing}}}, state)
       when pairing != state.discoverable and state.registered do
     state = %{state | discoverable: pairing}
-    readvertise(state)
+    _ = readvertise(state)
     {:noreply, state}
   end
 
@@ -221,7 +221,8 @@ defmodule NanoKVMGo.Bluetooth.HID do
     manager = "org.bluez.LEAdvertisingManager1"
 
     Task.start(fn ->
-      DBus.call(bus, @bluez, @adapter, manager, "UnregisterAdvertisement", "o", [@advertisement])
+      _ =
+        DBus.call(bus, @bluez, @adapter, manager, "UnregisterAdvertisement", "o", [@advertisement])
 
       DBus.call(bus, @bluez, @adapter, manager, "RegisterAdvertisement", "oa{sv}", [
         @advertisement,

@@ -103,18 +103,20 @@ defmodule NanoKVMGo.Video.Protocol do
     text
     |> String.split()
     |> Enum.chunk_every(2, 2, :discard)
-    |> Enum.reduce(%{}, fn [name, value], stats ->
-      case {@stats[name], Float.parse(value)} do
-        {nil, _number} ->
-          stats
+    |> Enum.reduce(%{}, &put_stat/2)
+  end
 
-        {_key, :error} ->
-          stats
+  defp put_stat([name, value], stats) do
+    case {@stats[name], Float.parse(value)} do
+      {nil, _number} ->
+        stats
 
-        {key, {number, _rest}} ->
-          Map.put(stats, key, if(number == trunc(number), do: trunc(number), else: number))
-      end
-    end)
+      {_key, :error} ->
+        stats
+
+      {key, {number, _rest}} ->
+        Map.put(stats, key, if(number == trunc(number), do: trunc(number), else: number))
+    end
   end
 
   @spec input_changed?(non_neg_integer()) :: boolean()

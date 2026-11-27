@@ -232,7 +232,7 @@ defmodule NanoKVMGo.DBus do
         state
 
       {{waiter, timer}, pending} ->
-        Process.cancel_timer(timer)
+        _ = Process.cancel_timer(timer)
         answer(%{state | pending: pending}, waiter, result(message))
     end
   end

@@ -270,7 +270,7 @@ defmodule NanoKVMGo.DBus.Wire do
     {length, at} = take(:uint32, bin, at)
     if length > @max_array, do: throw(:malformed)
     start = align(at, alignment(element))
-    fixed(bin, start, length)
+    _ = fixed(bin, start, length)
     array(element, bin, start, start + length)
   end
 

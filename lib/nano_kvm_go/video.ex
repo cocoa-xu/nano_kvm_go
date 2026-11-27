@@ -572,7 +572,7 @@ defmodule NanoKVMGo.Video do
 
   defp reply_snapshots(state, reply) do
     Enum.each(state.snapshots, fn {from, timer} ->
-      Process.cancel_timer(timer)
+      _ = Process.cancel_timer(timer)
       GenServer.reply(from, reply)
     end)
 

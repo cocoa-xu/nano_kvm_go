@@ -26,7 +26,10 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
 
   def info, do: GenServer.call(__MODULE__, :info)
   def devices, do: GenServer.call(__MODULE__, :devices)
-  def open_pairing(seconds), do: GenServer.call(__MODULE__, {:open_pairing, seconds}, 30_000)
+
+  def open_pairing(seconds, discoverable?),
+    do: GenServer.call(__MODULE__, {:open_pairing, seconds, discoverable?}, 30_000)
+
   def close_pairing, do: GenServer.call(__MODULE__, :close_pairing, 30_000)
   def scan(on?), do: GenServer.call(__MODULE__, {:scan, on?}, 30_000)
   def forget(address), do: GenServer.call(__MODULE__, {:forget, address}, 30_000)
@@ -74,10 +77,9 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
   def handle_call(:devices, _from, state),
     do: {:reply, Enum.map(state.devices, &device/1), state}
 
-  def handle_call({:open_pairing, seconds}, _from, state) do
+  def handle_call({:open_pairing, seconds, discoverable?}, _from, state) do
     with :ok <- set(state, "Pairable", {"b", true}),
-         :ok <- set(state, "DiscoverableTimeout", {"u", seconds}),
-         :ok <- set(state, "Discoverable", {"b", true}) do
+         :ok <- if(discoverable?, do: discoverable(state, seconds), else: :ok) do
       if state.pairing, do: Process.cancel_timer(state.pairing)
       timer = Process.send_after(self(), :close_pairing, seconds * 1000)
       {:reply, :ok, notify_adapter(%{state | pairing: timer})}
@@ -185,6 +187,11 @@ defmodule NanoKVMGo.Bluetooth.Adapter do
       {:error, {"org.bluez.Error.AlreadyExists", _}} -> :ok
       error -> error
     end
+  end
+
+  defp discoverable(state, seconds) do
+    with :ok <- set(state, "DiscoverableTimeout", {"u", seconds}),
+         do: set(state, "Discoverable", {"b", true})
   end
 
   defp close(state) do

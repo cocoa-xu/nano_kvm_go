@@ -111,11 +111,14 @@ defmodule NanoKVMGo.Bluetooth do
   def devices, do: Adapter.devices()
 
   @doc """
-  Lets other devices find the board and pair with it for `seconds`,
-  2 minutes by default.
+  Lets other devices pair with the board for `seconds`, 2 minutes by
+  default. They find it by an advertisement, such as
+  `NanoKVMGo.Bluetooth.HID`'s; with `discoverable: true` by the
+  controller's own as well.
   """
-  @spec open_pairing(pos_integer()) :: :ok | {:error, term()}
-  def open_pairing(seconds \\ 120), do: Adapter.open_pairing(seconds)
+  @spec open_pairing(pos_integer(), discoverable: boolean()) :: :ok | {:error, term()}
+  def open_pairing(seconds \\ 120, opts \\ []),
+    do: Adapter.open_pairing(seconds, Keyword.get(opts, :discoverable, false))
 
   @spec close_pairing() :: :ok | {:error, term()}
   def close_pairing, do: Adapter.close_pairing()

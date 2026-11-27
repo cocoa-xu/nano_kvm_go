@@ -5,10 +5,20 @@ defmodule NanoKVMGo.Video.ProtocolTest do
 
   test "decodes the packets of the port program" do
     assert Protocol.decode(<<0, "capture 1920x1080">>) == {:log, "capture 1920x1080"}
-    assert Protocol.decode(<<1, 0, 0, 0, 1, 0x41>>) == {:h264, :delta, <<0, 0, 0, 1, 0x41>>}
-    assert Protocol.decode(<<2, 0, 0, 0, 1, 0x67>>) == {:h264, :key, <<0, 0, 0, 1, 0x67>>}
-    assert Protocol.decode(<<4, 0, 0, 0, 1, 0x02>>) == {:h265, :delta, <<0, 0, 0, 1, 0x02>>}
-    assert Protocol.decode(<<5, 0, 0, 0, 1, 0x40>>) == {:h265, :key, <<0, 0, 0, 1, 0x40>>}
+    # An access unit: its frame-end time in microseconds, then the unit.
+    assert Protocol.decode(<<1, 9_000::64, 0, 0, 0, 1, 0x41>>) ==
+             {:h264, :delta, <<0, 0, 0, 1, 0x41>>, 9_000}
+
+    assert Protocol.decode(<<2, 9_000::64, 0, 0, 0, 1, 0x67>>) ==
+             {:h264, :key, <<0, 0, 0, 1, 0x67>>, 9_000}
+
+    assert Protocol.decode(<<4, 0::64, 0, 0, 0, 1, 0x02>>) ==
+             {:h265, :delta, <<0, 0, 0, 1, 0x02>>, 0}
+
+    assert Protocol.decode(<<5, 0::64, 0, 0, 0, 1, 0x40>>) ==
+             {:h265, :key, <<0, 0, 0, 1, 0x40>>, 0}
+
+    assert Protocol.decode(<<5, 0, 0>>) == :unknown
 
     assert Protocol.decode(<<3, "3840x2160@30">>) ==
              {:input, %{width: 3840, height: 2160, fps: 30}}

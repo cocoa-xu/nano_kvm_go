@@ -17,14 +17,17 @@
  * 4 H.265 access unit, 5 H.265 keyframe, 6 snapshot: big-endian 16-bit width
  * and height, then RGB, 7 statistics of the stream, once a second while it
  * runs: "<name> <value>" pairs, see send_stats), stdin takes {packet, 4} commands and its end stops
- * the program: "s <x> <y> <width> <height>" asks for a snapshot of that
+ * the program. Encoded access units start with an unsigned big-endian
+ * 64-bit frame-end CLOCK_MONOTONIC timestamp in microseconds.
+ * "s <x> <y> <width> <height>" asks for a snapshot of that
  * region of the next frame, in the input's pixels. With KVM_ENCODER_DEV=<video encoder
  * device> as well, the commands are "1" start the video stream, "0" stop,
  * "k" make the next frame an IDR, and "e <codec> <rate control> <bit/s> <QP>
  * <keyframe interval> <max fps> <matrix> <range>" the encoding, which
  * KVM_ENCODING gives at the start: codec "h264" or "h265"; rate control
  * "cq" (a constant QP), "cbr" (a constant bitrate) or "vbr" (the QP, more
- * where the bitrate would go over); a keyframe interval in frames; a max
+ * where the bitrate would go over); a keyframe interval in frames (0 for
+ * on demand); a max
  * fps of 0 for the input's; the colour, "auto", "bt601" or "bt709" and
  * "auto", "full" or "limited". Where the capture converts the colour
  * (V4L2_FMT_FLAG_CSC_*), the HDMI bridge does, "auto" keeping its own choice;
@@ -427,12 +430,12 @@ static struct {
  * DMA memory the CPU reads uncached, a few MB/s slower than RAM, and the
  * reader at the other end of stdout can be slow a moment. The main loop
  * hands each buffer over and goes on feeding the encoder; the writer copies
- * it out, writes it and gives the buffer back to the encoder.
+ * it out, returns the DMA buffer, then writes the copy.
  */
 static struct {
 	pthread_mutex_t lock;
 	pthread_cond_t ready;
-	struct strm_out { int index, type; size_t offset, size; } queue[NSTRM];
+	struct strm_out { int index, type; size_t offset, size; double end; } queue[NSTRM];
 	unsigned int head, count;
 } wq = { .lock = PTHREAD_MUTEX_INITIALIZER, .ready = PTHREAD_COND_INITIALIZER };
 
@@ -451,20 +454,14 @@ static void *writer(void *arg)
 		o = wq.queue[wq.head];
 		pthread_mutex_unlock(&wq.lock);
 
-		if (o.size > copy_size) {
+		if (o.size + 8 > copy_size) {
 			free(copy);
-			copy_size = o.size;
+			copy_size = o.size + 8;
 			copy = malloc(copy_size);
 			if (!copy)
 				die("frame copy");
 		}
-		memcpy(copy, (char *)venc.strm[o.index] + o.offset, o.size);
-		write_packet(o.type, copy, o.size);
-
-		pthread_mutex_lock(&wq.lock);
-		wq.head = (wq.head + 1) % NSTRM;
-		wq.count--;
-		pthread_mutex_unlock(&wq.lock);
+		memcpy(copy + 8, (char *)venc.strm[o.index] + o.offset, o.size);
 		{
 			struct v4l2_plane plane = { 0 };
 			struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
@@ -472,18 +469,33 @@ static void *writer(void *arg)
 						   .flags = venc.strm_flags,
 						   .m.planes = &plane, .length = 1 };
 
-			if (xioctl(venc.fd, VIDIOC_QBUF, &buf) && errno != EINVAL)
+			if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
 				die("QBUF encoder capture");
 		}
+		/* Preserve capture timing even when stdout or the VM queues frames. */
+		{
+			uint64_t us = (uint64_t)llround(o.end * 1e6);
+			unsigned int i;
+
+			for (i = 0; i < 8; i++)
+				copy[i] = us >> (56 - 8 * i);
+		}
+		write_packet(o.type, copy, o.size + 8);
+
+		pthread_mutex_lock(&wq.lock);
+		wq.head = (wq.head + 1) % NSTRM;
+		wq.count--;
+		pthread_mutex_unlock(&wq.lock);
 	}
 	return NULL;
 }
 
-static void writer_put(int index, int type, size_t offset, size_t size)
+static void writer_put(int index, int type, size_t offset, size_t size, double end)
 {
 	pthread_mutex_lock(&wq.lock);
 	wq.queue[(wq.head + wq.count) % NSTRM] =
-		(struct strm_out){ .index = index, .type = type, .offset = offset, .size = size };
+		(struct strm_out){ .index = index, .type = type, .offset = offset, .size = size,
+				   .end = end };
 	wq.count++;
 	pthread_cond_signal(&wq.ready);
 	pthread_mutex_unlock(&wq.lock);
@@ -582,7 +594,7 @@ static int rc_set(const char *text)
 	int qp, c;
 
 	if (sscanf(text, "%4s %3s %u %d %u %u %5s %7s", codec, mode, &bitrate, &qp, &gop, &max_fps,
-		   matrix, range) != 8 || qp < 0 || qp > 51 || !gop ||
+		   matrix, range) != 8 || qp < 0 || qp > 51 ||
 	    (strcmp(mode, "cq") && !bitrate) ||
 	    (strcmp(matrix, "auto") && strcmp(matrix, "bt601") && strcmp(matrix, "bt709")) ||
 	    (strcmp(range, "auto") && strcmp(range, "full") && strcmp(range, "limited")))
@@ -612,7 +624,7 @@ static int rc_set(const char *text)
 	rc.debt = 0;
 	rc.qp = rc.mode == RC_CBR ? clamp_qp(rc.qp) : qp;
 	rc.key_qp = rc.mode == RC_CBR ? clamp_qp(rc.key_qp) : qp;
-	logline("%s: %s, %u bit/s, QP %d, a keyframe every %u frames, %u fps at most, colour %s %s",
+	logline("%s: %s, %u bit/s, QP %d, keyframes every %u frames (0: when asked), %u fps at most, colour %s %s",
 		codecs[c].label, mode, bitrate, qp, gop, max_fps, matrix, range);
 	return 1;
 }
@@ -957,7 +969,7 @@ static void venc_queue(const struct v4l2_buffer *cbuf, int dmabuf_fd)
 				   .memory = V4L2_MEMORY_DMABUF, .index = cbuf->index,
 				   .flags = V4L2_BUF_FLAG_REQUEST_FD,
 				   .request_fd = venc.request, .m.planes = &plane, .length = 1 };
-	int idr = venc.force_idr || venc.since_idr >= rc.gop;
+	int idr = venc.force_idr || (rc.gop && venc.since_idr >= rc.gop);
 
 	if (idr) {
 		venc.force_idr = 0;
@@ -1044,7 +1056,7 @@ static int venc_send(void)
 			st.keys++;
 		writer_put(buf.index,
 			   buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe : codec->pkt_frame,
-			   plane.data_offset, size);
+			   plane.data_offset, size, venc_frame_end);
 		rc_frame(size, buf.flags & V4L2_BUF_FLAG_KEYFRAME);
 		venc_bytes += size;
 		return 1;

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* Video timestamps preserve capture frame intervals through pipe and VM
+  delays. The port protocol now carries a 64-bit capture timestamp; rebuild
+  the C program and Elixir library together
+* Keyframes default to on demand. A stalled subscriber stops receiving
+  frames until it drains its backlog, then requests one recovery keyframe
+
 * `NanoKVMGo.Video`: the stream's statistics each second, as
   `{NanoKVMGo.Video, {:stats, stats}}` to subscribers and from `stats/1`:
   frames captured, encoded and skipped while the encoder was still on the

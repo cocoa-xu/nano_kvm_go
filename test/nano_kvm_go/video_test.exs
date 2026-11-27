@@ -25,8 +25,8 @@ defmodule NanoKVMGo.VideoTest do
     command=$(dd bs="$length" count=1 2>/dev/null)
     event "command $command"
     case "$command" in
-      1) env printf '\\000\\000\\000\\004\\002KEY\\000\\000\\000\\004\\001DEL' ;;
-      k) env printf '\\000\\000\\000\\004\\002KEY' ;;
+      1) env printf '\\000\\000\\000\\014\\002STAMPKEY\\000\\000\\000\\014\\001STAMPDEL' ;;
+      k) env printf '\\000\\000\\000\\014\\002STAMPKEY' ;;
       s*) env printf '\\000\\000\\000\\013\\006\\000\\002\\000\\001RGBrgb' ;;
     esac
   done
@@ -39,7 +39,15 @@ defmodule NanoKVMGo.VideoTest do
   # A capture of a fake program, once the program runs.
   defp start_video(tmp_dir, opts \\ []) do
     {fake, opts} = Keyword.pop(opts, :fake, @fake)
-    program = FakeProgram.write!(Path.join(tmp_dir, "fake_video"), fake)
+
+    stamp =
+      for <<(byte <- <<os_time()::64>>)>>,
+        into: "",
+        do: "\\" <> String.pad_leading(Integer.to_string(byte, 8), 3, "0")
+
+    fake = String.replace(fake, "STAMP", stamp)
+    name = "fake_video_#{System.unique_integer([:positive])}"
+    program = FakeProgram.write!(Path.join(tmp_dir, name), fake)
     video = start_supervised!({Video, [program: program, devices: @devices, name: nil] ++ opts})
     assert_receive {FakeProgram, "start"}
     {video, program}
@@ -63,7 +71,7 @@ defmodule NanoKVMGo.VideoTest do
     # a call made then is handled after it.
     :erlang.trace(video, true, [:receive])
     Video.request_keyframe(video)
-    assert_receive {:trace, ^video, :receive, {_port, {:data, <<2, "KEY">>}}}
+    assert_receive {:trace, ^video, :receive, {_port, {:data, <<2, _at::64, "KEY">>}}}
     _codec = Video.codec(video)
     refute_received {Video, _message}
   end
@@ -71,8 +79,8 @@ defmodule NanoKVMGo.VideoTest do
   test "the time each access unit came from the encoder, for subscribers that ask", %{
     tmp_dir: tmp_dir
   } do
-    {video, _program} = start_video(tmp_dir)
     before = System.monotonic_time(:microsecond)
+    {video, _program} = start_video(tmp_dir)
     assert :ok = Video.subscribe(video, timestamps: true)
 
     assert_receive {Video, {:h264, :key, "KEY", key_at}}
@@ -85,12 +93,149 @@ defmodule NanoKVMGo.VideoTest do
     assert_raise ArgumentError, fn -> Video.subscribe(video, timestamps: :yes) end
   end
 
+  test "capture timestamps survive a blocked video process", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    assert :ok = Video.subscribe(video, timestamps: true)
+    assert_receive {Video, {:h264, :key, "KEY", _}}
+    assert_receive {Video, {:h264, :delta, "DEL", _}}
+    port = FakeProgram.port(video)
+    captured = os_time()
+
+    :ok = :sys.suspend(video)
+
+    try do
+      send(video, {port, {:data, <<1, captured::64, "FIRST">>}})
+      Process.sleep(60)
+      send(video, {port, {:data, <<1, captured + 5_000::64, "SECOND">>}})
+    after
+      :ok = :sys.resume(video)
+    end
+
+    assert_receive {Video, {:h264, :delta, "FIRST", first}}
+    assert_receive {Video, {:h264, :delta, "SECOND", second}}
+    assert second - first == 5_000
+    assert System.monotonic_time(:microsecond) - first >= 50_000
+  end
+
+  test "a stalled viewer recovers without interrupting a healthy viewer", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    assert :ok = Video.subscribe(video)
+    assert_receive {Video, {:h264, :key, "KEY"}}
+    assert_receive {Video, {:h264, :delta, "DEL"}}
+    test = self()
+
+    slow =
+      spawn_link(fn ->
+        :ok = Video.subscribe(video)
+        send(test, :subscribed)
+        paused_viewer(test)
+      end)
+
+    on_exit(fn -> Process.exit(slow, :kill) end)
+    assert_receive :subscribed
+    assert_receive {FakeProgram, "command k"}
+    assert_receive {Video, {:h264, :key, "KEY"}}
+
+    for _ <- 1..2 do
+      for _ <- 1..40 do
+        inject_frame(video, 1, "TICK")
+        assert_receive {Video, {:h264, :delta, "TICK"}}
+      end
+
+      assert {:message_queue_len, 30} = Process.info(slow, :message_queue_len)
+      refute_receive {FakeProgram, "command k"}, 50
+
+      send(slow, :catch_up)
+      assert_receive :caught_up
+      inject_frame(video, 1, "RECOVER")
+      assert_receive {Video, {:h264, :delta, "RECOVER"}}
+      assert_receive {FakeProgram, "command k"}
+      assert_receive {Video, {:h264, :key, "KEY"}}
+      assert_receive {:slow, {Video, {:h264, :key, "KEY"}}}
+      inject_frame(video, 1, "LIVE")
+      assert_receive {Video, {:h264, :delta, "LIVE"}}
+      assert_receive {:slow, {Video, {:h264, :delta, "LIVE"}}}
+      refute_receive {FakeProgram, "command k"}, 50
+      send(slow, :pause)
+      assert_receive :paused
+    end
+
+    monitor = Process.monitor(slow)
+    send(slow, :stop)
+    assert_receive {:DOWN, ^monitor, :process, ^slow, :normal}
+    inject_frame(video, 1, "AFTER")
+    assert_receive {Video, {:h264, :delta, "AFTER"}}
+    refute_receive {FakeProgram, "command 0"}, 50
+  end
+
+  test "keyframes also stop accumulating for a stalled viewer", %{tmp_dir: tmp_dir} do
+    {video, _program} = start_video(tmp_dir)
+    test = self()
+
+    slow =
+      spawn_link(fn ->
+        :ok = Video.subscribe(video)
+        send(test, :subscribed)
+        paused_viewer(test)
+      end)
+
+    on_exit(fn -> Process.exit(slow, :kill) end)
+    assert_receive :subscribed
+    assert_receive {FakeProgram, "command 1"}
+    for _ <- 1..40, do: inject_frame(video, 2, "KEY")
+    assert {:message_queue_len, 30} = Process.info(slow, :message_queue_len)
+    refute_receive {FakeProgram, "command k"}, 50
+  end
+
+  defp os_time do
+    :erlang.system_info(:os_monotonic_time_source)
+    |> Keyword.fetch!(:time)
+    |> System.convert_time_unit(:native, :microsecond)
+  end
+
+  defp inject_frame(video, type, data) do
+    send(video, {FakeProgram.port(video), {:data, <<type, os_time()::64, data::binary>>}})
+    Video.codec(video)
+  end
+
+  defp paused_viewer(test) do
+    receive do
+      :catch_up ->
+        flush_video()
+        send(test, :caught_up)
+        active_viewer(test)
+
+      :stop ->
+        :ok
+    end
+  end
+
+  defp active_viewer(test) do
+    receive do
+      :pause ->
+        send(test, :paused)
+        paused_viewer(test)
+
+      message ->
+        send(test, {:slow, message})
+        active_viewer(test)
+    end
+  end
+
+  defp flush_video do
+    receive do
+      {Video, _} -> flush_video()
+    after
+      0 -> :ok
+    end
+  end
+
   test "tells subscribers the codec of each access unit", %{tmp_dir: tmp_dir} do
     # Packet types 5 and 4: an H.265 keyframe and delta.
     h265 =
       @fake
-      |> String.replace("\\002KEY", "\\005KEY")
-      |> String.replace("\\001DEL", "\\004DEL")
+      |> String.replace("\\002STAMPKEY", "\\005STAMPKEY")
+      |> String.replace("\\001STAMPDEL", "\\004STAMPDEL")
 
     {video, _program} = start_video(tmp_dir, fake: h265)
     assert :ok = Video.subscribe(video)
@@ -104,7 +249,7 @@ defmodule NanoKVMGo.VideoTest do
     assert Video.codec(video) == :h264
 
     assert :ok = Video.subscribe(video, codecs: [:h264, :h265])
-    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 0 0 auto auto"}
     assert_receive {FakeProgram, "command 1"}
     assert Video.codec(video) == :h265
 
@@ -118,11 +263,11 @@ defmodule NanoKVMGo.VideoTest do
       end)
 
     assert_receive :subscribed
-    assert_receive {FakeProgram, "command e h264 vbr 8000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "command e h264 vbr 8000000 24 0 0 auto auto"}
     assert Video.codec(video) == :h264
 
     send(h264_only, :leave)
-    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "command e h265 vbr 8000000 24 0 0 auto auto"}
 
     assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: []) end
     assert_raise ArgumentError, fn -> Video.subscribe(video, codecs: [:vp9]) end
@@ -212,13 +357,13 @@ defmodule NanoKVMGo.VideoTest do
         encoding: {Agent, :get, [saved, & &1]}
       )
 
-    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 0 0 auto auto"}
 
     Agent.update(saved, fn _encoding -> [rate_control: :constant_qp, qp: 30] end)
     Process.exit(video, :kill)
 
     assert_receive {FakeProgram, "start"}
-    assert_receive {FakeProgram, "encoding h264 cq 8000000 30 600 0 auto auto"}
+    assert_receive {FakeProgram, "encoding h264 cq 8000000 30 0 0 auto auto"}
   end
 
   test "encodes as asked, from the start and while it runs", %{tmp_dir: tmp_dir} do
@@ -228,14 +373,14 @@ defmodule NanoKVMGo.VideoTest do
         encoding: [rate_control: :cbr, bitrate: 3_000_000]
       )
 
-    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 600 0 auto auto"}
+    assert_receive {FakeProgram, "encoding h264 cbr 3000000 24 0 0 auto auto"}
 
     assert Video.encoding(video) == %{
              codec: :auto,
              rate_control: :cbr,
              bitrate: 3_000_000,
              qp: 24,
-             keyframe_interval: 600,
+             keyframe_interval: 0,
              max_fps: 0,
              color_matrix: :auto,
              color_range: :auto
@@ -244,7 +389,7 @@ defmodule NanoKVMGo.VideoTest do
     assert %{codec: :h265, rate_control: :vbr, bitrate: 3_000_000, max_fps: 30} =
              Video.set_encoding(video, codec: :h265, rate_control: :vbr, max_fps: 30)
 
-    assert_receive {FakeProgram, "command e h265 vbr 3000000 24 600 30 auto auto"}
+    assert_receive {FakeProgram, "command e h265 vbr 3000000 24 0 30 auto auto"}
     assert Video.codec(video) == :h265
 
     for changes <- [
@@ -252,7 +397,7 @@ defmodule NanoKVMGo.VideoTest do
           [codec: :vp9],
           [rate_control: :abr],
           [bitrate: 0],
-          [keyframe_interval: 0],
+          [keyframe_interval: 65_536],
           [color_matrix: :bt2020],
           [color_range: :tv],
           [gop: 30]

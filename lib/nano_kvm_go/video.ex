@@ -26,8 +26,8 @@ defmodule NanoKVMGo.Video do
       reaches the port
     * `:jpeg_quality` - 1 to 100, 60 by default
     * `:encoding` - how the stream is encoded, see `t:encoding/0`: the
-      codec every subscriber decodes, VBR of up to 8 Mbit/s at QP 24, a
-      keyframe every 600 frames, by default. Or `{module, function, args}`
+      codec every subscriber decodes, VBR of up to 8 Mbit/s at QP 24,
+      keyframes only when a subscriber needs one, by default. Or `{module, function, args}`
       that returns it, called each time the process starts: a restart by
       its supervisor then takes the encoding saved last, a user's settings
       say
@@ -52,15 +52,15 @@ defmodule NanoKVMGo.Video do
       parameter sets come before every keyframe. When the codec changes, the
       next access unit is a keyframe of the new one. A subscriber that asks
       for timestamps gets `{codec, :key | :delta, data, microseconds}`, the
-      `System.monotonic_time(:microsecond)` when the access unit came from
-      the encoder: a player can show the frames at the pace they were made,
-      however the network delivers them.
+      capture's frame-end time in microseconds, calibrated to the VM's
+      monotonic clock when the port starts. Intervals follow the capture
+      clock, independent of pipe, process and network delays.
     * `{NanoKVMGo.Video, {:stats, stats}}` once a second while the stream
       runs: what the capture and the encoder did, see `t:stats/0`
 
   A subscriber with more than 30 messages waiting misses the deltas until
-  the next keyframe, which is then asked for. One on another node gets them
-  all: its messages waiting cannot be counted.
+  it has caught up, then gets a keyframe, asked for then. One on another
+  node gets them all: its messages waiting cannot be counted.
 
   ## EDID
 
@@ -83,13 +83,14 @@ defmodule NanoKVMGo.Video do
     rate_control: :vbr,
     bitrate: 8_000_000,
     qp: 24,
-    keyframe_interval: 600,
+    keyframe_interval: 0,
     max_fps: 0,
     color_matrix: :auto,
     color_range: :auto
   }
   @input_restart_delay 100
   @max_backlog 30
+  @caught_up 2
 
   @typedoc """
   The signal at the input, as the LT7911EXC bridge reports it: the size of
@@ -130,7 +131,8 @@ defmodule NanoKVMGo.Video do
     * `:qp` - the quantizer, 0 (the best picture) to 51: constant QP's, the
       best VBR goes to
     * `:keyframe_interval` - frames from a keyframe to the next, unless one
-      is asked for sooner
+      is asked for sooner; 0 for keyframes only when a subscriber needs one,
+      starting or catching up: a stream that loses nothing needs no others
     * `:max_fps` - frames a second at most, 0 for as many as the input has
     * `:color_matrix` - the matrix that turns the samples into RGB,
       `:bt601` or `:bt709`
@@ -154,7 +156,7 @@ defmodule NanoKVMGo.Video do
           rate_control: :constant_qp | :cbr | :vbr,
           bitrate: pos_integer(),
           qp: 0..51,
-          keyframe_interval: pos_integer(),
+          keyframe_interval: non_neg_integer(),
           max_fps: non_neg_integer(),
           color_matrix: :auto | :bt601 | :bt709,
           color_range: :auto | :full | :limited
@@ -392,7 +394,8 @@ defmodule NanoKVMGo.Video do
       codec: nil,
       started_at: nil,
       restart_delay: nil,
-      snapshots: []
+      snapshots: [],
+      clock_offset: nil
     }
 
     if File.regular?(config.program),
@@ -520,20 +523,20 @@ defmodule NanoKVMGo.Video do
     %{state | input: input}
   end
 
-  defp handle_packet({codec, kind, au}, state) when codec in [:h264, :h265] do
-    at = System.monotonic_time(:microsecond)
+  defp handle_packet({codec, kind, au, captured_at}, state) when codec in [:h264, :h265] do
+    at = captured_at + state.clock_offset
 
     subscribers =
       Map.new(state.subscribers, fn {pid, subscriber} ->
         {pid, deliver(pid, subscriber, {codec, kind, au}, at)}
       end)
 
-    waiting? = Enum.any?(subscribers, fn {_pid, subscriber} -> not subscriber.synced? end)
+    waiting? = Enum.any?(subscribers, fn {pid, subscriber} -> waiting?(pid, subscriber) end)
     state = %{state | subscribers: subscribers}
 
     cond do
-      kind == :key -> %{state | key_requested?: waiting?}
-      waiting? and not state.key_requested? -> ask_keyframe(state)
+      waiting? and (kind == :key or not state.key_requested?) -> ask_keyframe(state)
+      kind == :key -> %{state | key_requested?: false}
       true -> state
     end
   end
@@ -556,23 +559,27 @@ defmodule NanoKVMGo.Video do
     %{state | snapshots: []}
   end
 
-  # Keyframes go to everyone; deltas only to subscribers that have the
-  # stream's state and keep up.
-  defp deliver(pid, subscriber, {_codec, :key, _au} = au, at) do
-    send_au(pid, subscriber, au, at)
-    %{subscriber | synced?: true}
-  end
+  defp deliver(pid, subscriber, {_codec, kind, _data} = au, at) do
+    queued = backlog(pid)
 
-  defp deliver(pid, %{synced?: true} = subscriber, au, at) do
-    if backlog(pid) < @max_backlog do
-      send_au(pid, subscriber, au, at)
-      subscriber
-    else
-      %{subscriber | synced?: false}
+    cond do
+      queued >= @max_backlog ->
+        %{subscriber | synced?: false}
+
+      kind == :key and (subscriber.synced? or queued <= @caught_up) ->
+        send_au(pid, subscriber, au, at)
+        %{subscriber | synced?: true}
+
+      subscriber.synced? ->
+        send_au(pid, subscriber, au, at)
+        subscriber
+
+      true ->
+        subscriber
     end
   end
 
-  defp deliver(_pid, subscriber, _delta, _at), do: subscriber
+  defp waiting?(pid, subscriber), do: not subscriber.synced? and backlog(pid) <= @caught_up
 
   defp send_au(pid, %{timestamps?: true}, {codec, kind, au}, at),
     do: send(pid, {__MODULE__, {codec, kind, au, at}})
@@ -667,7 +674,7 @@ defmodule NanoKVMGo.Video do
 
     case devices(config) do
       {:ok, devices} ->
-        state = %{state | codec: stream_codec(state)}
+        state = %{state | codec: stream_codec(state), clock_offset: __MODULE__.Clock.offset()}
         port = open_port(config, devices, program_encoding(state))
 
         state = %{
@@ -783,7 +790,7 @@ defmodule NanoKVMGo.Video do
 
   defp valid_encoding?(:bitrate, bitrate), do: bitrate in 1..1_000_000_000
   defp valid_encoding?(:qp, qp), do: qp in 0..51
-  defp valid_encoding?(:keyframe_interval, frames), do: frames in 1..65_535
+  defp valid_encoding?(:keyframe_interval, frames), do: frames in 0..65_535
   defp valid_encoding?(:max_fps, fps), do: fps in 0..1_000
   defp valid_encoding?(:color_matrix, matrix), do: matrix in [:auto, :bt601, :bt709]
   defp valid_encoding?(:color_range, range), do: range in [:auto, :full, :limited]

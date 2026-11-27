@@ -2,11 +2,12 @@ defmodule NanoKVMGo.Video.Protocol do
   @moduledoc false
   # The nano_kvm_go_video port program's side of the port: {:packet, 4} frames
   # of one type byte and a payload on its stdout, {:packet, 4} commands on
-  # its stdin. The end of its stdin stops it.
+  # its stdin. The end of its stdin stops it. An access unit's payload starts
+  # with its frame-end CLOCK_MONOTONIC timestamp in microseconds.
 
   @type packet() ::
           {:log, String.t()}
-          | {:h264 | :h265, :key | :delta, binary()}
+          | {:h264 | :h265, :key | :delta, binary(), non_neg_integer()}
           | {:input, NanoKVMGo.Video.input()}
           | {:snapshot, NanoKVMGo.Video.snapshot()}
           | {:stats, NanoKVMGo.Video.stats()}
@@ -33,10 +34,10 @@ defmodule NanoKVMGo.Video.Protocol do
 
   @spec decode(binary()) :: packet()
   def decode(<<0, line::binary>>), do: {:log, line}
-  def decode(<<1, au::binary>>), do: {:h264, :delta, au}
-  def decode(<<2, au::binary>>), do: {:h264, :key, au}
-  def decode(<<4, au::binary>>), do: {:h265, :delta, au}
-  def decode(<<5, au::binary>>), do: {:h265, :key, au}
+  def decode(<<1, at::64, au::binary>>), do: {:h264, :delta, au, at}
+  def decode(<<2, at::64, au::binary>>), do: {:h264, :key, au, at}
+  def decode(<<4, at::64, au::binary>>), do: {:h265, :delta, au, at}
+  def decode(<<5, at::64, au::binary>>), do: {:h265, :key, au, at}
 
   def decode(<<6, width::16, height::16, rgb::binary>>) when byte_size(rgb) == width * height * 3,
     do: {:snapshot, %{width: width, height: height, data: rgb}}

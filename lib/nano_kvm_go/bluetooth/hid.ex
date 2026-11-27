@@ -72,7 +72,10 @@ defmodule NanoKVMGo.Bluetooth.HID do
   def report(server \\ __MODULE__, name, report),
     do: GenServer.cast(server, {:report, name, report})
 
-  @doc "Whether a host listens to the input reports."
+  @doc """
+  Whether a host listens to the input reports: it subscribed to them, or a
+  paired device is connected, which BlueZ remembers the subscriptions of.
+  """
   @spec connected?(GenServer.server()) :: boolean()
   def connected?(server \\ __MODULE__), do: GenServer.call(server, :connected?)
 
@@ -109,6 +112,7 @@ defmodule NanoKVMGo.Bluetooth.HID do
       inputs: Map.new(inputs, fn {name, {id, _length}} -> {name, report_path(:input, id)} end),
       outputs: Map.new(outputs, fn {name, {id, _length}} -> {report_path(:output, id), name} end),
       notifying: MapSet.new(),
+      hosts: connected_paired(),
       registered: false,
       discoverable: false
     }
@@ -127,13 +131,15 @@ defmodule NanoKVMGo.Bluetooth.HID do
 
   @impl GenServer
   def handle_call(:connected?, _from, state),
-    do: {:reply, MapSet.size(state.notifying) > 0, state}
+    do: {:reply, MapSet.size(state.notifying) > 0 or MapSet.size(state.hosts) > 0, state}
 
   @impl GenServer
   def handle_cast({:report, name, report}, state) do
     case Map.fetch(state.inputs, name) do
       {:ok, path} ->
-        if MapSet.member?(state.notifying, path), do: value_changed(state, path, report)
+        # Not only after StartNotify: BlueZ restores the subscriptions of
+        # bonded hosts when it starts, without a StartNotify for them.
+        value_changed(state, path, report)
         {:noreply, put_in(state.values[path], report)}
 
       :error ->
@@ -165,6 +171,18 @@ defmodule NanoKVMGo.Bluetooth.HID do
     readvertise(state)
     {:noreply, state}
   end
+
+  def handle_info(
+        {NanoKVMGo.Bluetooth, {:device, %{paired: true, connected: true} = device}},
+        state
+      ),
+      do: {:noreply, %{state | hosts: MapSet.put(state.hosts, device.address)}}
+
+  def handle_info({NanoKVMGo.Bluetooth, {:device, device}}, state),
+    do: {:noreply, %{state | hosts: MapSet.delete(state.hosts, device.address)}}
+
+  def handle_info({NanoKVMGo.Bluetooth, {:device_removed, address}}, state),
+    do: {:noreply, %{state | hosts: MapSet.delete(state.hosts, address)}}
 
   def handle_info({NanoKVMGo.Bluetooth, _event}, state), do: {:noreply, state}
 
@@ -210,6 +228,13 @@ defmodule NanoKVMGo.Bluetooth.HID do
         %{}
       ])
     end)
+  end
+
+  defp connected_paired do
+    for device <- NanoKVMGo.Bluetooth.devices(),
+        device.paired and device.connected,
+        into: MapSet.new(),
+        do: device.address
   end
 
   defp value_changed(state, path, value) do

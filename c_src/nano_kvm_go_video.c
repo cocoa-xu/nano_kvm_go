@@ -436,12 +436,21 @@ static unsigned long venc_bytes;	/* sent since the last statistics */
 
 /* What the stream did since the last PKT_STATS: frames captured while it
  * ran, encoded, and skipped because the encoder was still on the one before;
- * the time each took from going in to coming out; its QP. */
+ * the time each took from going in to coming out, from the end of its frame
+ * to this program having it, and from there to coming out; its QP. */
 static struct {
-	double since, encode_sum, encode_max;
+	double since, encode_sum, encode_max, dequeue_sum, dequeue_max, ready_sum, ready_max;
 	unsigned int captured, encoded, skipped, keys, qp_sum, qp_max;
 	unsigned long bytes;
 } st;
+
+/* The end of the frame in the encoder, as the capture stamped it. */
+static double venc_frame_end;
+
+static double frame_end(const struct v4l2_buffer *buf)
+{
+	return buf->timestamp.tv_sec + buf->timestamp.tv_usec / 1e6;
+}
 
 /*
  * Rate control, frame by frame: a frame takes about complexity / 2^(QP/6)
@@ -920,8 +929,11 @@ static int venc_send(void)
 		venc.force_idr = 1;
 	} else {
 		size_t size = plane.bytesused - plane.data_offset;
-		double ms = (now() - venc.last) * 1000;
+		double ms = (now() - venc.last) * 1000, ready = (now() - venc_frame_end) * 1000;
 
+		st.ready_sum += ready;
+		if (ready > st.ready_max)
+			st.ready_max = ready;
 		st.encoded++;
 		st.encode_sum += ms;
 		if (ms > st.encode_max)
@@ -959,9 +971,12 @@ static void send_stats(void)
 		return;
 	n = snprintf(text, sizeof(text),
 		     "seconds %.3f captured %u encoded %u skipped %u encode_ms %.1f encode_max_ms %.1f "
+		     "dequeue_ms %.1f dequeue_max_ms %.1f ready_ms %.1f ready_max_ms %.1f "
 		     "bytes %lu qp %.1f qp_max %u keys %u",
 		     t - st.since, st.captured, st.encoded, st.skipped,
-		     st.encoded ? st.encode_sum / st.encoded : 0.0, st.encode_max, st.bytes,
+		     st.encoded ? st.encode_sum / st.encoded : 0.0, st.encode_max,
+		     st.captured ? st.dequeue_sum / st.captured : 0.0, st.dequeue_max,
+		     st.encoded ? st.ready_sum / st.encoded : 0.0, st.ready_max, st.bytes,
 		     st.encoded ? (double)st.qp_sum / st.encoded : 0.0, st.qp_max, st.keys);
 	write_packet(PKT_STATS, text, (size_t)n);
 	memset(&st, 0, sizeof(st));
@@ -1496,8 +1511,14 @@ int main(int argc, char **argv)
 					tq = now();
 					refs++;
 				}
-				if (venc.on && venc.streaming)
+				if (venc.on && venc.streaming) {
+					double lag = (now() - frame_end(&buf)) * 1000;
+
 					st.captured++;
+					st.dequeue_sum += lag;
+					if (lag > st.dequeue_max)
+						st.dequeue_max = lag;
+				}
 				if (venc.on && venc.streaming && venc_due()) {
 					if (venc.busy >= 0 || venc.request_busy) {
 						st.skipped++;
@@ -1507,6 +1528,7 @@ int main(int argc, char **argv)
 							venc_start();
 						}
 						venc_queue(&buf, dmabuf[buf.index]);
+						venc_frame_end = frame_end(&buf);
 						refs++;
 					}
 				}

@@ -13,6 +13,9 @@
   the pipe to Elixir holds 1 MB and the program runs at real-time priority.
   Every frame is encoded, about 9 ms from the end of a frame to its
   encoding (`stats/1`'s `:ready_ms`), where a third were dropped before
+* The video program asks the encoder for cached bitstream buffers
+  (`V4L2_MEMORY_FLAG_NON_COHERENT`), which a driver that syncs only the
+  bytes written makes about ten times cheaper to read than uncached ones
 * `NanoKVMGo.Video.subscribe/2` takes `timestamps: true`: each access unit
   then comes with the time it came from the encoder, for a player that
   shows the frames at the pace they were made

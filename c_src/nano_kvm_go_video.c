@@ -417,6 +417,7 @@ static struct {
 	double last;		/* when the last frame went in */
 	void *strm[NSTRM];
 	size_t strm_length[NSTRM];
+	unsigned int strm_flags;
 	struct v4l2_format cfmt;	/* the capture's */
 	unsigned int fps;
 } venc = { .fd = -1, .media = -1, .request = -1, .busy = -1 };
@@ -468,6 +469,7 @@ static void *writer(void *arg)
 			struct v4l2_plane plane = { 0 };
 			struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 						   .memory = V4L2_MEMORY_MMAP, .index = o.index,
+						   .flags = venc.strm_flags,
 						   .m.planes = &plane, .length = 1 };
 
 			if (xioctl(venc.fd, VIDIOC_QBUF, &buf) && errno != EINVAL)
@@ -874,12 +876,18 @@ static void venc_start(void)
 	req.count = NSTRM;
 	req.type = strm_type;
 	req.memory = V4L2_MEMORY_MMAP;
+	req.flags = V4L2_MEMORY_FLAG_NON_COHERENT;
 	if (xioctl(venc.fd, VIDIOC_REQBUFS, &req) || req.count < NSTRM)
 		die("REQBUFS encoder capture");
+	/*
+	 * Cached where the driver allows it, which syncs the bytes written
+	 * itself; the CPU only reads these, so nothing needs cleaning.
+	 */
+	venc.strm_flags = req.flags & V4L2_MEMORY_FLAG_NON_COHERENT ? V4L2_BUF_FLAG_NO_CACHE_CLEAN : 0;
 	for (i = 0; i < NSTRM; i++) {
 		struct v4l2_plane plane = { 0 };
 		struct v4l2_buffer buf = { .type = strm_type, .memory = V4L2_MEMORY_MMAP, .index = i,
-					   .m.planes = &plane, .length = 1 };
+					   .flags = venc.strm_flags, .m.planes = &plane, .length = 1 };
 
 		if (xioctl(venc.fd, VIDIOC_QUERYBUF, &buf))
 			die("QUERYBUF encoder");
@@ -896,7 +904,7 @@ static void venc_start(void)
 		die("STREAMON encoder");
 	venc.streaming = 1;
 	venc.force_idr = 1;
-	logline("%s: %u fps", codec->label, venc.fps);
+	logline("%s: %u fps%s", codec->label, venc.fps, venc.strm_flags ? ", cached output" : "");
 }
 
 /* Between two frames: nothing in the encoder. */
@@ -1041,6 +1049,7 @@ static int venc_send(void)
 		venc_bytes += size;
 		return 1;
 	}
+	buf.flags = venc.strm_flags;
 	if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
 		die("QBUF encoder capture");
 	return sent;

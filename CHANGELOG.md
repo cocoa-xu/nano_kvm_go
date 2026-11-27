@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 (2026-11-28)
 
+* Video statistics include bitstream copy, writer queue and pipe timings,
+  capture age at the VM, and encoded keyframe/delta burst sizes
 * Video timestamps preserve capture frame intervals through pipe and VM
   delays. The port protocol now carries a 64-bit capture timestamp; rebuild
   the C program and Elixir library together
@@ -23,8 +25,8 @@
   (`V4L2_MEMORY_FLAG_NON_COHERENT`), which a driver that syncs only the
   bytes written makes about ten times cheaper to read than uncached ones
 * `NanoKVMGo.Video.subscribe/2` takes `timestamps: true`: each access unit
-  then comes with the time it came from the encoder, for a player that
-  shows the frames at the pace they were made
+  then comes with its capture timestamp, preserving frame intervals through
+  encoder, pipe and VM scheduling delays
 * `NanoKVMGo.Bluetooth`: BlueZ for the controller in the AIC8800 Wi-Fi chip,
   with the system's D-Bus and bluetoothd started under MuonTrap (the Nerves
   system with BlueZ): the controller's state, the devices it knows, pairing

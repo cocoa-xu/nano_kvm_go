@@ -79,6 +79,7 @@ defmodule NanoKVMGo.Bluetooth do
   # file system: the data partition's directory goes there.
   defp bind_storage do
     File.mkdir_p!(@storage)
+    File.chmod!(@storage, 0o700)
 
     if File.read!("/proc/mounts") =~ " #{@state_dir} " do
       :ok

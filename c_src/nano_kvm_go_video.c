@@ -25,10 +25,10 @@
  * where the bitrate would go over); a keyframe interval in frames; a max
  * fps of 0 for the input's; the colour, "auto", "bt601" or "bt709" and
  * "auto", "full" or "limited". Where the capture converts the colour
- * (V4L2_FMT_FLAG_CSC_*), the HDMI bridge does, "auto" being BT.601 at full
- * range, JPEG's own; elsewhere the colour only labels what the bridge hands
- * over, "auto" being that, BT.709 at full range. The streams and snapshots
- * say what the samples are.
+ * (V4L2_FMT_FLAG_CSC_*), the HDMI bridge does, "auto" keeping its own choice;
+ * elsewhere the colour only labels what the bridge hands over, "auto" being
+ * that, BT.709 at full range. The streams and snapshots say what the samples
+ * are.
  *
  * KVM_CAPTURE_BUFFERS is how many frames the capture holds, 2 to MAX_CAP,
  * 4 without it: the encoders read them in place, so their memory and the
@@ -532,9 +532,11 @@ static void capture_colour(int cap, struct v4l2_format *cfmt)
 	 */
 	f.fmt.pix.priv = V4L2_PIX_FMT_PRIV_MAGIC;
 	f.fmt.pix.flags = V4L2_PIX_FMT_FLAG_SET_CSC;
-	f.fmt.pix.ycbcr_enc = want_bt601 == 0 ? V4L2_YCBCR_ENC_709 : V4L2_YCBCR_ENC_601;
-	f.fmt.pix.quantization = want_limited == 1 ? V4L2_QUANTIZATION_LIM_RANGE :
-						     V4L2_QUANTIZATION_FULL_RANGE;
+	f.fmt.pix.ycbcr_enc = want_bt601 == AUTO ? V4L2_YCBCR_ENC_DEFAULT :
+			      want_bt601 ? V4L2_YCBCR_ENC_601 : V4L2_YCBCR_ENC_709;
+	f.fmt.pix.quantization = want_limited == AUTO ? V4L2_QUANTIZATION_DEFAULT :
+				 want_limited ? V4L2_QUANTIZATION_LIM_RANGE :
+						V4L2_QUANTIZATION_FULL_RANGE;
 	if (xioctl(cap, VIDIOC_S_FMT, &f)) {
 		logline("capture colour: %s", strerror(errno));
 		f = *cfmt;

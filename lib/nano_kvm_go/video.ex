@@ -136,11 +136,12 @@ defmodule NanoKVMGo.Video do
 
   Where the capture converts the colour (the system's HDMI bridge driver
   from linux-ax620e 4bd74a0 on), the bridge turns the picture into the
-  colour asked for, and the streams and snapshots carry it: `:auto` is
-  BT.601 at full range, which JPEG decoders take for granted, so the MJPEG
-  stream shows the colours right as well. Elsewhere the colour only labels
-  the samples as the bridge hands them over: `:auto` is that, BT.709 at full
-  range, and another label shifts the colours a decoder shows.
+  colour asked for, and the streams and snapshots carry it; `:auto` keeps
+  the bridge's own choice, BT.709 at full range for a computer's RGB. JPEG
+  decoders take BT.601 for granted: with BT.709 the MJPEG stream shows the
+  strongest colours a little off, with `:bt601` right. Elsewhere the colour
+  only labels the samples as the bridge hands them over: `:auto` is that,
+  BT.709 at full range, and another label shifts the colours a decoder shows.
   """
   @type encoding() :: %{
           codec: :auto | :h264 | :h265,

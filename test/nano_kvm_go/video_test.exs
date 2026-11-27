@@ -99,6 +99,8 @@ defmodule NanoKVMGo.VideoTest do
     assert_receive {Video, {:h264, :key, "KEY", _}}
     assert_receive {Video, {:h264, :delta, "DEL", _}}
     port = FakeProgram.port(video)
+    send(video, {port, {:data, <<7, "seconds 1">>}})
+    assert_receive {Video, {:stats, %{port_frames: 2}}}
     captured = os_time()
 
     :ok = :sys.suspend(video)
@@ -115,6 +117,15 @@ defmodule NanoKVMGo.VideoTest do
     assert_receive {Video, {:h264, :delta, "SECOND", second}}
     assert second - first == 5_000
     assert System.monotonic_time(:microsecond) - first >= 50_000
+    send(video, {port, {:data, <<7, "seconds 1 pipe_ms 0.2 pipe_max_ms 0.9">>}})
+
+    assert_receive {Video,
+                    {:stats, %{port_frames: 2, port_ms: mean, port_max_ms: longest, pipe_ms: 0.2}}}
+
+    assert mean >= 50
+    assert longest >= mean
+    send(video, {port, {:data, <<7, "seconds 1">>}})
+    assert_receive {Video, {:stats, %{port_frames: 0, port_ms: 0, port_max_ms: 0.0}}}
   end
 
   test "a stalled viewer recovers without interrupting a healthy viewer", %{tmp_dir: tmp_dir} do

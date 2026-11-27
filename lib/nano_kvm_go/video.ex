@@ -188,6 +188,13 @@ defmodule NanoKVMGo.Video do
   program having it, `:dequeue_ms` and `:dequeue_max_ms`, and to its coming
   out of the encoder, `:ready_ms` and `:ready_max_ms`; the `:bytes` sent; the QP, `:qp` on
   average and `:qp_max`; the keyframes, `:keys`.
+
+  Writer samples (`:writer_frames`) report mean/max `:writer_queue_ms`,
+  `:copy_ms`, and `:pipe_ms`, including scheduling or blocking in each stage.
+  `:port_ms` and `:port_max_ms` measure capture EOF to this process handling
+  the packet, over `:port_frames` samples. These windows need not contain
+  the same frames as the encoder window. `:key_bytes`, `:key_max_bytes`,
+  and `:delta_max_bytes` expose encoded bursts.
   """
   @type stats() :: %{optional(atom()) => number()}
 
@@ -395,7 +402,8 @@ defmodule NanoKVMGo.Video do
       started_at: nil,
       restart_delay: nil,
       snapshots: [],
-      clock_offset: nil
+      clock_offset: nil,
+      port_timing: {0, 0, 0}
     }
 
     if File.regular?(config.program),
@@ -525,6 +533,9 @@ defmodule NanoKVMGo.Video do
 
   defp handle_packet({codec, kind, au, captured_at}, state) when codec in [:h264, :h265] do
     at = captured_at + state.clock_offset
+    age = max(0, System.monotonic_time(:microsecond) - at)
+    {count, sum, longest} = state.port_timing
+    state = %{state | port_timing: {count + 1, sum + age, max(longest, age)}}
 
     subscribers =
       Map.new(state.subscribers, fn {pid, subscriber} ->
@@ -544,8 +555,17 @@ defmodule NanoKVMGo.Video do
   defp handle_packet({:snapshot, picture}, state), do: reply_snapshots(state, {:ok, picture})
 
   defp handle_packet({:stats, stats}, state) do
+    {count, sum, longest} = state.port_timing
+
+    stats =
+      Map.merge(stats, %{
+        port_frames: count,
+        port_ms: if(count > 0, do: sum / count / 1000, else: 0),
+        port_max_ms: longest / 1000
+      })
+
     notify(state, {:stats, stats})
-    %{state | stats: stats}
+    %{state | stats: stats, port_timing: {0, 0, 0}}
   end
 
   defp handle_packet(:unknown, state), do: state
@@ -664,7 +684,7 @@ defmodule NanoKVMGo.Video do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
 
     reply_snapshots(
-      %{state | port: nil, subscribers: subscribers, stats: nil},
+      %{state | port: nil, subscribers: subscribers, stats: nil, port_timing: {0, 0, 0}},
       {:error, :stopped}
     )
   end

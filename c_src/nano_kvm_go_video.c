@@ -435,7 +435,11 @@ static struct {
 static struct {
 	pthread_mutex_t lock;
 	pthread_cond_t ready;
-	struct strm_out { int index, type; size_t offset, size; double end; } queue[NSTRM];
+	struct strm_out { int index, type; size_t offset, size; double end, queued; } queue[NSTRM];
+	struct writer_stats {
+		unsigned int frames;
+		double queue_sum, queue_max, copy_sum, copy_max, pipe_sum, pipe_max;
+	} stats;
 	unsigned int head, count;
 } wq = { .lock = PTHREAD_MUTEX_INITIALIZER, .ready = PTHREAD_COND_INITIALIZER };
 
@@ -447,12 +451,14 @@ static void *writer(void *arg)
 	(void)arg;
 	for (;;) {
 		struct strm_out o;
+		double started, copied, writing, done, elapsed;
 
 		pthread_mutex_lock(&wq.lock);
 		while (!wq.count)
 			pthread_cond_wait(&wq.ready, &wq.lock);
 		o = wq.queue[wq.head];
 		pthread_mutex_unlock(&wq.lock);
+		started = now();
 
 		if (o.size + 8 > copy_size) {
 			free(copy);
@@ -462,6 +468,7 @@ static void *writer(void *arg)
 				die("frame copy");
 		}
 		memcpy(copy + 8, (char *)venc.strm[o.index] + o.offset, o.size);
+		copied = now();
 		{
 			struct v4l2_plane plane = { 0 };
 			struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
@@ -480,9 +487,21 @@ static void *writer(void *arg)
 			for (i = 0; i < 8; i++)
 				copy[i] = us >> (56 - 8 * i);
 		}
+		writing = now();
 		write_packet(o.type, copy, o.size + 8);
+		done = now();
 
 		pthread_mutex_lock(&wq.lock);
+		wq.stats.frames++;
+		elapsed = (started - o.queued) * 1000;
+		wq.stats.queue_sum += elapsed;
+		wq.stats.queue_max = fmax(wq.stats.queue_max, elapsed);
+		elapsed = (copied - started) * 1000;
+		wq.stats.copy_sum += elapsed;
+		wq.stats.copy_max = fmax(wq.stats.copy_max, elapsed);
+		elapsed = (done - writing) * 1000;
+		wq.stats.pipe_sum += elapsed;
+		wq.stats.pipe_max = fmax(wq.stats.pipe_max, elapsed);
 		wq.head = (wq.head + 1) % NSTRM;
 		wq.count--;
 		pthread_mutex_unlock(&wq.lock);
@@ -495,7 +514,7 @@ static void writer_put(int index, int type, size_t offset, size_t size, double e
 	pthread_mutex_lock(&wq.lock);
 	wq.queue[(wq.head + wq.count) % NSTRM] =
 		(struct strm_out){ .index = index, .type = type, .offset = offset, .size = size,
-				   .end = end };
+				   .end = end, .queued = now() };
 	wq.count++;
 	pthread_cond_signal(&wq.ready);
 	pthread_mutex_unlock(&wq.lock);
@@ -539,7 +558,7 @@ static unsigned long venc_bytes;	/* sent since the last statistics */
 static struct {
 	double since, encode_sum, encode_max, dequeue_sum, dequeue_max, ready_sum, ready_max;
 	unsigned int captured, encoded, skipped, keys, qp_sum, qp_max;
-	unsigned long bytes;
+	unsigned long bytes, key_bytes, key_max_bytes, delta_max_bytes;
 } st;
 
 /* The end of the frame in the encoder, as the capture stamped it. */
@@ -1052,8 +1071,14 @@ static int venc_send(void)
 		st.qp_sum += rc.used_qp;
 		if ((unsigned int)rc.used_qp > st.qp_max)
 			st.qp_max = rc.used_qp;
-		if (buf.flags & V4L2_BUF_FLAG_KEYFRAME)
+		if (buf.flags & V4L2_BUF_FLAG_KEYFRAME) {
 			st.keys++;
+			st.key_bytes += size;
+			if (size > st.key_max_bytes)
+				st.key_max_bytes = size;
+		} else if (size > st.delta_max_bytes) {
+			st.delta_max_bytes = size;
+		}
 		writer_put(buf.index,
 			   buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe : codec->pkt_frame,
 			   plane.data_offset, size, venc_frame_end);
@@ -1070,7 +1095,8 @@ static int venc_send(void)
 /* Once a second while the stream runs, for the viewers' quality panel. */
 static void send_stats(void)
 {
-	char text[256];
+	char text[768];
+	struct writer_stats ws;
 	double t = now();
 	int n;
 
@@ -1080,15 +1106,27 @@ static void send_stats(void)
 	}
 	if (t - st.since < 1)
 		return;
+	pthread_mutex_lock(&wq.lock);
+	ws = wq.stats;
+	memset(&wq.stats, 0, sizeof(wq.stats));
+	pthread_mutex_unlock(&wq.lock);
 	n = snprintf(text, sizeof(text),
 		     "seconds %.3f captured %u encoded %u skipped %u encode_ms %.1f encode_max_ms %.1f "
 		     "dequeue_ms %.1f dequeue_max_ms %.1f ready_ms %.1f ready_max_ms %.1f "
-		     "bytes %lu qp %.1f qp_max %u keys %u",
+		     "bytes %lu qp %.1f qp_max %u keys %u writer_frames %u "
+		     "writer_queue_ms %.2f writer_queue_max_ms %.2f copy_ms %.2f copy_max_ms %.2f "
+		     "pipe_ms %.2f pipe_max_ms %.2f key_bytes %lu key_max_bytes %lu delta_max_bytes %lu",
 		     t - st.since, st.captured, st.encoded, st.skipped,
 		     st.encoded ? st.encode_sum / st.encoded : 0.0, st.encode_max,
 		     st.captured ? st.dequeue_sum / st.captured : 0.0, st.dequeue_max,
 		     st.encoded ? st.ready_sum / st.encoded : 0.0, st.ready_max, st.bytes,
-		     st.encoded ? (double)st.qp_sum / st.encoded : 0.0, st.qp_max, st.keys);
+		     st.encoded ? (double)st.qp_sum / st.encoded : 0.0, st.qp_max, st.keys, ws.frames,
+		     ws.frames ? ws.queue_sum / ws.frames : 0.0, ws.queue_max,
+		     ws.frames ? ws.copy_sum / ws.frames : 0.0, ws.copy_max,
+		     ws.frames ? ws.pipe_sum / ws.frames : 0.0, ws.pipe_max,
+		     st.key_bytes, st.key_max_bytes, st.delta_max_bytes);
+	if (n < 0 || (size_t)n >= sizeof(text))
+		die("video stats overflow");
 	write_packet(PKT_STATS, text, (size_t)n);
 	memset(&st, 0, sizeof(st));
 	st.since = t;
@@ -1692,8 +1730,12 @@ int main(int argc, char **argv)
 
 		if (venc.on && venc.streaming)
 			send_stats();
-		else
-			st.since = 0;
+		else {
+			memset(&st, 0, sizeof(st));
+			pthread_mutex_lock(&wq.lock);
+			memset(&wq.stats, 0, sizeof(wq.stats));
+			pthread_mutex_unlock(&wq.lock);
+		}
 
 		if (now() - tstat >= 5) {
 			double dt = now() - tstat;

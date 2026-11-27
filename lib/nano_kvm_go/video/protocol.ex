@@ -29,7 +29,17 @@ defmodule NanoKVMGo.Video.Protocol do
     "bytes" => :bytes,
     "qp" => :qp,
     "qp_max" => :qp_max,
-    "keys" => :keys
+    "keys" => :keys,
+    "writer_frames" => :writer_frames,
+    "writer_queue_ms" => :writer_queue_ms,
+    "writer_queue_max_ms" => :writer_queue_max_ms,
+    "copy_ms" => :copy_ms,
+    "copy_max_ms" => :copy_max_ms,
+    "pipe_ms" => :pipe_ms,
+    "pipe_max_ms" => :pipe_max_ms,
+    "key_bytes" => :key_bytes,
+    "key_max_bytes" => :key_max_bytes,
+    "delta_max_bytes" => :delta_max_bytes
   }
 
   @spec decode(binary()) :: packet()

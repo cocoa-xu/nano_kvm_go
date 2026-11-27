@@ -26,6 +26,29 @@ defmodule NanoKVMGo.Video.ProtocolTest do
     assert Protocol.decode(<<>>) == :unknown
   end
 
+  test "the statistics a second of the stream, names it does not know left out" do
+    text =
+      "seconds 1.002 captured 30 encoded 28 skipped 2 encode_ms 31.5 encode_max_ms 41.0 " <>
+        "bytes 412345 qp 26.5 qp_max 30 keys 0 later 7"
+
+    assert Protocol.decode(<<7, text::binary>>) ==
+             {:stats,
+              %{
+                seconds: 1.002,
+                captured: 30,
+                encoded: 28,
+                skipped: 2,
+                encode_ms: 31.5,
+                encode_max_ms: 41,
+                bytes: 412_345,
+                qp: 26.5,
+                qp_max: 30,
+                keys: 0
+              }}
+
+    assert Protocol.decode(<<7, "captured x">>) == {:stats, %{}}
+  end
+
   test "parses the input as reported" do
     assert Protocol.parse_input("1920x1080@60") == {:ok, %{width: 1920, height: 1080, fps: 60}}
     assert Protocol.parse_input("0x1080@60") == :error

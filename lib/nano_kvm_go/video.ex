@@ -51,6 +51,8 @@ defmodule NanoKVMGo.Video do
       of the codec, `:h264` or `:h265`, starting with a keyframe. The
       parameter sets come before every keyframe. When the codec changes, the
       next access unit is a keyframe of the new one.
+    * `{NanoKVMGo.Video, {:stats, stats}}` once a second while the stream
+      runs: what the capture and the encoder did, see `t:stats/0`
 
   A subscriber with more than 30 messages waiting misses the deltas until
   the next keyframe, which is then asked for. One on another node gets them
@@ -169,9 +171,19 @@ defmodule NanoKVMGo.Video do
   @typedoc "An option of `subscribe/2`: the codecs the subscriber decodes."
   @type subscribe_option() :: {:codecs, [:h264 | :h265, ...]}
 
+  @typedoc """
+  What the stream did over the last `:seconds`: frames `:captured`,
+  `:encoded`, and `:skipped` because the encoder was still on the one
+  before; the time a frame took through the encoder, `:encode_ms` on
+  average and `:encode_max_ms` at most; the `:bytes` sent; the QP, `:qp` on
+  average and `:qp_max`; the keyframes, `:keys`.
+  """
+  @type stats() :: %{optional(atom()) => number()}
+
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
-          {NanoKVMGo.Video, {:input, input()} | {:h264 | :h265, :key | :delta, binary()}}
+          {NanoKVMGo.Video,
+           {:input, input()} | {:h264 | :h265, :key | :delta, binary()} | {:stats, stats()}}
 
   @doc """
   Starts the capture. See the module documentation for the options.
@@ -277,6 +289,10 @@ defmodule NanoKVMGo.Video do
   @spec input(GenServer.server()) :: input() | nil
   def input(server \\ __MODULE__), do: GenServer.call(server, :input)
 
+  @doc "The stream's last second, see `t:stats/0`; `nil` while it does not run."
+  @spec stats(GenServer.server()) :: stats() | nil
+  def stats(server \\ __MODULE__), do: GenServer.call(server, :stats)
+
   @doc """
   Counters of the capture driver since the device started, `nil` when the
   driver does not have them:
@@ -359,6 +375,7 @@ defmodule NanoKVMGo.Video do
       subscribers: %{},
       key_requested?: false,
       input: nil,
+      stats: nil,
       codec: nil,
       started_at: nil,
       restart_delay: nil,
@@ -401,6 +418,7 @@ defmodule NanoKVMGo.Video do
   end
 
   def handle_call(:input, _from, state), do: {:reply, state.input, state}
+  def handle_call(:stats, _from, state), do: {:reply, state.stats, state}
 
   def handle_call({:snapshot, region, timeout}, from, state) do
     case {state.port, state.input} do
@@ -495,6 +513,12 @@ defmodule NanoKVMGo.Video do
   end
 
   defp handle_packet({:snapshot, picture}, state), do: reply_snapshots(state, {:ok, picture})
+
+  defp handle_packet({:stats, stats}, state) do
+    notify(state, {:stats, stats})
+    %{state | stats: stats}
+  end
+
   defp handle_packet(:unknown, state), do: state
 
   defp reply_snapshots(state, reply) do
@@ -551,7 +575,15 @@ defmodule NanoKVMGo.Video do
       {subscriber, subscribers} ->
         Process.demonitor(subscriber.monitor, [:flush])
         state = %{state | subscribers: subscribers}
-        if subscribers == %{}, do: :ok = command(state, :stop_stream)
+
+        state =
+          if subscribers == %{} do
+            :ok = command(state, :stop_stream)
+            %{state | stats: nil}
+          else
+            state
+          end
+
         choose_codec(state)
     end
   end
@@ -592,7 +624,11 @@ defmodule NanoKVMGo.Video do
 
   defp stopped(state) do
     subscribers = Map.new(state.subscribers, fn {pid, s} -> {pid, %{s | synced?: false}} end)
-    reply_snapshots(%{state | port: nil, subscribers: subscribers}, {:error, :stopped})
+
+    reply_snapshots(
+      %{state | port: nil, subscribers: subscribers, stats: nil},
+      {:error, :stopped}
+    )
   end
 
   defp start_program(state) do

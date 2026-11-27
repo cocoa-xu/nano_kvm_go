@@ -9,9 +9,23 @@ defmodule NanoKVMGo.Video.Protocol do
           | {:h264 | :h265, :key | :delta, binary()}
           | {:input, NanoKVMGo.Video.input()}
           | {:snapshot, NanoKVMGo.Video.snapshot()}
+          | {:stats, NanoKVMGo.Video.stats()}
           | :unknown
 
   @exit_input_changed 3
+
+  @stats %{
+    "seconds" => :seconds,
+    "captured" => :captured,
+    "encoded" => :encoded,
+    "skipped" => :skipped,
+    "encode_ms" => :encode_ms,
+    "encode_max_ms" => :encode_max_ms,
+    "bytes" => :bytes,
+    "qp" => :qp,
+    "qp_max" => :qp_max,
+    "keys" => :keys
+  }
 
   @spec decode(binary()) :: packet()
   def decode(<<0, line::binary>>), do: {:log, line}
@@ -29,6 +43,8 @@ defmodule NanoKVMGo.Video.Protocol do
       :error -> :unknown
     end
   end
+
+  def decode(<<7, text::binary>>), do: {:stats, parse_stats(text)}
 
   def decode(_packet), do: :unknown
 
@@ -64,6 +80,26 @@ defmodule NanoKVMGo.Video.Protocol do
       ],
       " "
     )
+  end
+
+  # "<name> <value>" pairs; names it does not know are left out.
+  @spec parse_stats(String.t()) :: NanoKVMGo.Video.stats()
+  def parse_stats(text) do
+    text
+    |> String.split()
+    |> Enum.chunk_every(2, 2, :discard)
+    |> Enum.reduce(%{}, fn [name, value], stats ->
+      case {@stats[name], Float.parse(value)} do
+        {nil, _number} ->
+          stats
+
+        {_key, :error} ->
+          stats
+
+        {key, {number, _rest}} ->
+          Map.put(stats, key, if(number == trunc(number), do: trunc(number), else: number))
+      end
+    end)
   end
 
   @spec input_changed?(non_neg_integer()) :: boolean()

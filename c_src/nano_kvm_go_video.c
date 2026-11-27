@@ -14,7 +14,8 @@
  * frames [type][payload] (type 0 log line, 1 H.264 access unit, 2 H.264
  * keyframe, 3 input: "<width>x<height>@<fps>", "none" or "unsupported",
  * 4 H.265 access unit, 5 H.265 keyframe, 6 snapshot: big-endian 16-bit width
- * and height, then RGB), stdin takes {packet, 4} commands and its end stops
+ * and height, then RGB, 7 statistics of the stream, once a second while it
+ * runs: "<name> <value>" pairs, see send_stats), stdin takes {packet, 4} commands and its end stops
  * the program: "s <x> <y> <width> <height>" asks for a snapshot of that
  * region of the next frame, in the input's pixels. With KVM_ENCODER_DEV=<video encoder
  * device> as well, the commands are "1" start the video stream, "0" stop,
@@ -79,7 +80,8 @@ static int xioctl(int fd, unsigned long req, void *arg)
 	return r;
 }
 
-enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME, PKT_SNAPSHOT };
+enum { PKT_LOG, PKT_FRAME, PKT_KEYFRAME, PKT_INPUT, PKT_HEVC_FRAME, PKT_HEVC_KEYFRAME, PKT_SNAPSHOT,
+       PKT_STATS };
 
 static int packet_mode;
 static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -431,6 +433,15 @@ static struct {
 	unsigned int x, y, width, height;
 } snap;
 static unsigned long venc_bytes;	/* sent since the last statistics */
+
+/* What the stream did since the last PKT_STATS: frames captured while it
+ * ran, encoded, and skipped because the encoder was still on the one before;
+ * the time each took from going in to coming out; its QP. */
+static struct {
+	double since, encode_sum, encode_max;
+	unsigned int captured, encoded, skipped, keys, qp_sum, qp_max;
+	unsigned long bytes;
+} st;
 
 /*
  * Rate control, frame by frame: a frame takes about complexity / 2^(QP/6)
@@ -909,7 +920,18 @@ static int venc_send(void)
 		venc.force_idr = 1;
 	} else {
 		size_t size = plane.bytesused - plane.data_offset;
+		double ms = (now() - venc.last) * 1000;
 
+		st.encoded++;
+		st.encode_sum += ms;
+		if (ms > st.encode_max)
+			st.encode_max = ms;
+		st.bytes += size;
+		st.qp_sum += rc.used_qp;
+		if ((unsigned int)rc.used_qp > st.qp_max)
+			st.qp_max = rc.used_qp;
+		if (buf.flags & V4L2_BUF_FLAG_KEYFRAME)
+			st.keys++;
 		write_packet(buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe :
 								  codec->pkt_frame,
 			     (char *)venc.strm[buf.index] + plane.data_offset, size);
@@ -920,6 +942,30 @@ static int venc_send(void)
 	if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
 		die("QBUF encoder capture");
 	return sent;
+}
+
+/* Once a second while the stream runs, for the viewers' quality panel. */
+static void send_stats(void)
+{
+	char text[256];
+	double t = now();
+	int n;
+
+	if (!st.since) {
+		st.since = t;
+		return;
+	}
+	if (t - st.since < 1)
+		return;
+	n = snprintf(text, sizeof(text),
+		     "seconds %.3f captured %u encoded %u skipped %u encode_ms %.1f encode_max_ms %.1f "
+		     "bytes %lu qp %.1f qp_max %u keys %u",
+		     t - st.since, st.captured, st.encoded, st.skipped,
+		     st.encoded ? st.encode_sum / st.encoded : 0.0, st.encode_max, st.bytes,
+		     st.encoded ? (double)st.qp_sum / st.encoded : 0.0, st.qp_max, st.keys);
+	write_packet(PKT_STATS, text, (size_t)n);
+	memset(&st, 0, sizeof(st));
+	st.since = t;
 }
 
 /* Kept until the encoder runs: commands can come while waiting for an input. */
@@ -1450,20 +1496,30 @@ int main(int argc, char **argv)
 					tq = now();
 					refs++;
 				}
-				if (venc.on && venc.streaming && venc.busy < 0 &&
-				    !venc.request_busy && venc_due()) {
-					if (venc_changed()) {
-						venc_stop();
-						venc_start();
+				if (venc.on && venc.streaming)
+					st.captured++;
+				if (venc.on && venc.streaming && venc_due()) {
+					if (venc.busy >= 0 || venc.request_busy) {
+						st.skipped++;
+					} else {
+						if (venc_changed()) {
+							venc_stop();
+							venc_start();
+						}
+						venc_queue(&buf, dmabuf[buf.index]);
+						refs++;
 					}
-					venc_queue(&buf, dmabuf[buf.index]);
-					refs++;
 				}
 				cap_refs[buf.index] = refs;
 				if (!refs && xioctl(cap, VIDIOC_QBUF, &buf))
 					die("QBUF capture");
 			}
 		}
+
+		if (venc.on && venc.streaming)
+			send_stats();
+		else
+			st.since = 0;
 
 		if (now() - tstat >= 5) {
 			double dt = now() - tstat;

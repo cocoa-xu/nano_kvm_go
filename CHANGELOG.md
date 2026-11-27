@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* `NanoKVMGo.Video`: the stream's statistics each second, as
+  `{NanoKVMGo.Video, {:stats, stats}}` to subscribers and from `stats/1`:
+  frames captured, encoded and skipped while the encoder was still on the
+  one before, the time a frame takes through the encoder, the bytes and
+  the QP
 * `NanoKVMGo.Bluetooth`: BlueZ for the controller in the AIC8800 Wi-Fi chip,
   with the system's D-Bus and bluetoothd started under MuonTrap (the Nerves
   system with BlueZ): the controller's state, the devices it knows, pairing

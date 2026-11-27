@@ -68,6 +68,23 @@ defmodule NanoKVMGo.VideoTest do
     refute_received {Video, _message}
   end
 
+  test "the time each access unit came from the encoder, for subscribers that ask", %{
+    tmp_dir: tmp_dir
+  } do
+    {video, _program} = start_video(tmp_dir)
+    before = System.monotonic_time(:microsecond)
+    assert :ok = Video.subscribe(video, timestamps: true)
+
+    assert_receive {Video, {:h264, :key, "KEY", key_at}}
+    assert_receive {Video, {:h264, :delta, "DEL", delta_at}}
+    assert before <= key_at and key_at <= delta_at
+
+    assert :ok = Video.subscribe(video, timestamps: false)
+    Video.request_keyframe(video)
+    assert_receive {Video, {:h264, :key, "KEY"}}
+    assert_raise ArgumentError, fn -> Video.subscribe(video, timestamps: :yes) end
+  end
+
   test "tells subscribers the codec of each access unit", %{tmp_dir: tmp_dir} do
     # Packet types 5 and 4: an H.265 keyframe and delta.
     h265 =

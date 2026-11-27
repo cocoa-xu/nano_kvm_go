@@ -50,7 +50,11 @@ defmodule NanoKVMGo.Video do
     * `{NanoKVMGo.Video, {codec, :key | :delta, data}}`, one access unit each
       of the codec, `:h264` or `:h265`, starting with a keyframe. The
       parameter sets come before every keyframe. When the codec changes, the
-      next access unit is a keyframe of the new one.
+      next access unit is a keyframe of the new one. A subscriber that asks
+      for timestamps gets `{codec, :key | :delta, data, microseconds}`, the
+      `System.monotonic_time(:microsecond)` when the access unit came from
+      the encoder: a player can show the frames at the pace they were made,
+      however the network delivers them.
     * `{NanoKVMGo.Video, {:stats, stats}}` once a second while the stream
       runs: what the capture and the encoder did, see `t:stats/0`
 
@@ -168,8 +172,11 @@ defmodule NanoKVMGo.Video do
 
   @type edid_option() :: {:device, Path.t()} | {:program, Path.t()}
 
-  @typedoc "An option of `subscribe/2`: the codecs the subscriber decodes."
-  @type subscribe_option() :: {:codecs, [:h264 | :h265, ...]}
+  @typedoc """
+  An option of `subscribe/2`: the codecs the subscriber decodes, and whether
+  access units come with their timestamps.
+  """
+  @type subscribe_option() :: {:codecs, [:h264 | :h265, ...]} | {:timestamps, boolean()}
 
   @typedoc """
   What the stream did over the last `:seconds`: frames `:captured`,
@@ -183,7 +190,10 @@ defmodule NanoKVMGo.Video do
   @typedoc "A message to subscribers, see the module documentation."
   @type message() ::
           {NanoKVMGo.Video,
-           {:input, input()} | {:h264 | :h265, :key | :delta, binary()} | {:stats, stats()}}
+           {:input, input()}
+           | {:h264 | :h265, :key | :delta, binary()}
+           | {:h264 | :h265, :key | :delta, binary(), integer()}
+           | {:stats, stats()}}
 
   @doc """
   Starts the capture. See the module documentation for the options.
@@ -236,15 +246,16 @@ defmodule NanoKVMGo.Video do
 
   The option `:codecs` names those the caller decodes, `[:h264]` by
   default: with the `:auto` codec the stream takes H.265 while every
-  subscriber decodes it. Subscribing again changes them. With options,
-  name the server first:
+  subscriber decodes it. With `timestamps: true` each access unit comes
+  with the time it came from the encoder (see the module documentation).
+  Subscribing again changes them. With options, name the server first:
 
       NanoKVMGo.Video.subscribe(NanoKVMGo.Video, codecs: [:h264, :h265])
   """
   @spec subscribe(GenServer.server(), [subscribe_option()]) :: :ok | {:error, :no_encoder}
   def subscribe(server \\ __MODULE__, opts \\ []) do
-    opts = Options.validate!(opts, [codecs: [:h264]], &valid_subscription?/2)
-    GenServer.call(server, {:subscribe, opts[:codecs]})
+    opts = Options.validate!(opts, [codecs: [:h264], timestamps: false], &valid_subscription?/2)
+    GenServer.call(server, {:subscribe, opts[:codecs], opts[:timestamps]})
   end
 
   @doc """
@@ -391,19 +402,30 @@ defmodule NanoKVMGo.Video do
   def handle_continue(:start, state), do: {:noreply, start_program(state)}
 
   @impl GenServer
-  def handle_call({:subscribe, _codecs}, _from, %{port: port, encoder?: false} = state)
+  def handle_call(
+        {:subscribe, _codecs, _timestamps},
+        _from,
+        %{port: port, encoder?: false} = state
+      )
       when port != nil do
     {:reply, {:error, :no_encoder}, state}
   end
 
-  def handle_call({:subscribe, codecs}, {pid, _tag}, state) do
+  def handle_call({:subscribe, codecs, timestamps}, {pid, _tag}, state) do
     state =
       case state.subscribers do
         %{^pid => subscriber} ->
-          choose_codec(put_in(state.subscribers[pid], %{subscriber | codecs: codecs}))
+          subscriber = %{subscriber | codecs: codecs, timestamps?: timestamps}
+          choose_codec(put_in(state.subscribers[pid], subscriber))
 
         subscribers ->
-          subscriber = %{monitor: Process.monitor(pid), synced?: false, codecs: codecs}
+          subscriber = %{
+            monitor: Process.monitor(pid),
+            synced?: false,
+            codecs: codecs,
+            timestamps?: timestamps
+          }
+
           state = choose_codec(%{state | subscribers: Map.put(subscribers, pid, subscriber)})
           :ok = command(state, if(subscribers == %{}, do: :start_stream, else: :keyframe))
           %{state | key_requested?: true}
@@ -497,9 +519,11 @@ defmodule NanoKVMGo.Video do
   end
 
   defp handle_packet({codec, kind, au}, state) when codec in [:h264, :h265] do
+    at = System.monotonic_time(:microsecond)
+
     subscribers =
       Map.new(state.subscribers, fn {pid, subscriber} ->
-        {pid, deliver(pid, subscriber, {codec, kind, au})}
+        {pid, deliver(pid, subscriber, {codec, kind, au}, at)}
       end)
 
     waiting? = Enum.any?(subscribers, fn {_pid, subscriber} -> not subscriber.synced? end)
@@ -532,21 +556,26 @@ defmodule NanoKVMGo.Video do
 
   # Keyframes go to everyone; deltas only to subscribers that have the
   # stream's state and keep up.
-  defp deliver(pid, subscriber, {_codec, :key, _au} = message) do
-    send(pid, {__MODULE__, message})
+  defp deliver(pid, subscriber, {_codec, :key, _au} = au, at) do
+    send_au(pid, subscriber, au, at)
     %{subscriber | synced?: true}
   end
 
-  defp deliver(pid, %{synced?: true} = subscriber, message) do
+  defp deliver(pid, %{synced?: true} = subscriber, au, at) do
     if backlog(pid) < @max_backlog do
-      send(pid, {__MODULE__, message})
+      send_au(pid, subscriber, au, at)
       subscriber
     else
       %{subscriber | synced?: false}
     end
   end
 
-  defp deliver(_pid, subscriber, _delta), do: subscriber
+  defp deliver(_pid, subscriber, _delta, _at), do: subscriber
+
+  defp send_au(pid, %{timestamps?: true}, {codec, kind, au}, at),
+    do: send(pid, {__MODULE__, {codec, kind, au, at}})
+
+  defp send_au(pid, _subscriber, au, _at), do: send(pid, {__MODULE__, au})
 
   # Process.info/2 takes local processes only.
   defp backlog(pid) when node(pid) == node() do
@@ -759,6 +788,8 @@ defmodule NanoKVMGo.Video do
 
   defp valid_subscription?(:codecs, codecs),
     do: is_list(codecs) and codecs != [] and Enum.all?(codecs, &(&1 in [:h264, :h265]))
+
+  defp valid_subscription?(:timestamps, timestamps), do: is_boolean(timestamps)
 
   defp capture_device(opts) do
     case Keyword.get_lazy(opts, :device, &Devices.capture/0) do

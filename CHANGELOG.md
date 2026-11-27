@@ -7,6 +7,9 @@
   frames captured, encoded and skipped while the encoder was still on the
   one before, the time a frame takes through the encoder, the bytes and
   the QP
+* `NanoKVMGo.Video.subscribe/2` takes `timestamps: true`: each access unit
+  then comes with the time it came from the encoder, for a player that
+  shows the frames at the pace they were made
 * `NanoKVMGo.Bluetooth`: BlueZ for the controller in the AIC8800 Wi-Fi chip,
   with the system's D-Bus and bluetoothd started under MuonTrap (the Nerves
   system with BlueZ): the controller's state, the devices it knows, pairing

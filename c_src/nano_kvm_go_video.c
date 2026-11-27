@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#define _GNU_SOURCE
 /*
  * nano_kvm_go_video: V4L2 capture -> V4L2 M2M JPEG encoder -> MJPEG over
  * HTTP, and optionally -> V4L2 stateless H.264 or H.265 encoder -> stdout for
@@ -49,6 +50,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -386,7 +388,7 @@ static void *acceptor(void *arg)
  * declares are the encoder's formats: changing them restarts the encoder
  * between two frames.
  */
-#define NSTRM 2
+#define NSTRM 4
 
 enum { CODEC_H264, CODEC_H265 };
 
@@ -419,6 +421,87 @@ static struct {
 	unsigned int fps;
 } venc = { .fd = -1, .media = -1, .request = -1, .busy = -1 };
 
+/*
+ * Encoded frames go out on a thread of their own: the encoder's buffers are
+ * DMA memory the CPU reads uncached, a few MB/s slower than RAM, and the
+ * reader at the other end of stdout can be slow a moment. The main loop
+ * hands each buffer over and goes on feeding the encoder; the writer copies
+ * it out, writes it and gives the buffer back to the encoder.
+ */
+static struct {
+	pthread_mutex_t lock;
+	pthread_cond_t ready;
+	struct strm_out { int index, type; size_t offset, size; } queue[NSTRM];
+	unsigned int head, count;
+} wq = { .lock = PTHREAD_MUTEX_INITIALIZER, .ready = PTHREAD_COND_INITIALIZER };
+
+static void *writer(void *arg)
+{
+	char *copy = NULL;
+	size_t copy_size = 0;
+
+	(void)arg;
+	for (;;) {
+		struct strm_out o;
+
+		pthread_mutex_lock(&wq.lock);
+		while (!wq.count)
+			pthread_cond_wait(&wq.ready, &wq.lock);
+		o = wq.queue[wq.head];
+		pthread_mutex_unlock(&wq.lock);
+
+		if (o.size > copy_size) {
+			free(copy);
+			copy_size = o.size;
+			copy = malloc(copy_size);
+			if (!copy)
+				die("frame copy");
+		}
+		memcpy(copy, (char *)venc.strm[o.index] + o.offset, o.size);
+		write_packet(o.type, copy, o.size);
+
+		pthread_mutex_lock(&wq.lock);
+		wq.head = (wq.head + 1) % NSTRM;
+		wq.count--;
+		pthread_mutex_unlock(&wq.lock);
+		{
+			struct v4l2_plane plane = { 0 };
+			struct v4l2_buffer buf = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+						   .memory = V4L2_MEMORY_MMAP, .index = o.index,
+						   .m.planes = &plane, .length = 1 };
+
+			if (xioctl(venc.fd, VIDIOC_QBUF, &buf) && errno != EINVAL)
+				die("QBUF encoder capture");
+		}
+	}
+	return NULL;
+}
+
+static void writer_put(int index, int type, size_t offset, size_t size)
+{
+	pthread_mutex_lock(&wq.lock);
+	wq.queue[(wq.head + wq.count) % NSTRM] =
+		(struct strm_out){ .index = index, .type = type, .offset = offset, .size = size };
+	wq.count++;
+	pthread_cond_signal(&wq.ready);
+	pthread_mutex_unlock(&wq.lock);
+}
+
+/* Until the writer has given every buffer back: the encoder stops or
+ * changes only then. */
+static void writer_drain(void)
+{
+	for (;;) {
+		pthread_mutex_lock(&wq.lock);
+		unsigned int left = wq.count;
+		pthread_mutex_unlock(&wq.lock);
+		if (!left)
+			return;
+		usleep(1000);
+	}
+}
+
+
 /* What the encoding asks for: the encoder takes it when it next starts. */
 static int want_codec = CODEC_H264;
 
@@ -435,7 +518,8 @@ static struct {
 static unsigned long venc_bytes;	/* sent since the last statistics */
 
 /* What the stream did since the last PKT_STATS: frames captured while it
- * ran, encoded, and skipped because the encoder was still on the one before;
+ * ran, encoded, and skipped: held while the encoder was busy, then passed by
+ * a newer one;
  * the time each took from going in to coming out, from the end of its frame
  * to this program having it, and from there to coming out; its QP. */
 static struct {
@@ -446,6 +530,11 @@ static struct {
 
 /* The end of the frame in the encoder, as the capture stamped it. */
 static double venc_frame_end;
+
+/* A frame captured while the encoder was still on the one before: it goes in
+ * as soon as the encoder is free, a newer one taking its place. */
+static struct v4l2_buffer venc_pending;
+static int venc_pending_held;
 
 static double frame_end(const struct v4l2_buffer *buf)
 {
@@ -818,6 +907,7 @@ static void venc_stop(void)
 	struct v4l2_requestbuffers req = { .memory = V4L2_MEMORY_DMABUF, .type = out_type };
 	int i;
 
+	writer_drain();
 	if (xioctl(venc.fd, VIDIOC_STREAMOFF, &out_type) ||
 	    xioctl(venc.fd, VIDIOC_STREAMOFF, &strm_type))
 		die("STREAMOFF encoder");
@@ -944,12 +1034,12 @@ static int venc_send(void)
 			st.qp_max = rc.used_qp;
 		if (buf.flags & V4L2_BUF_FLAG_KEYFRAME)
 			st.keys++;
-		write_packet(buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe :
-								  codec->pkt_frame,
-			     (char *)venc.strm[buf.index] + plane.data_offset, size);
+		writer_put(buf.index,
+			   buf.flags & V4L2_BUF_FLAG_KEYFRAME ? codec->pkt_keyframe : codec->pkt_frame,
+			   plane.data_offset, size);
 		rc_frame(size, buf.flags & V4L2_BUF_FLAG_KEYFRAME);
 		venc_bytes += size;
-		sent = 1;
+		return 1;
 	}
 	if (xioctl(venc.fd, VIDIOC_QBUF, &buf))
 		die("QBUF encoder capture");
@@ -1213,6 +1303,19 @@ int main(int argc, char **argv)
 	}
 	signal(SIGPIPE, SIG_IGN);
 	packet_mode = getenv("KVM_PORT") != NULL;
+	/* A moment the reader is slow must not hold up the capture. */
+	if (packet_mode)
+		fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 1 << 20);
+	/* Frames come at the input's pace and the encoder's end is due at once:
+	 * this program waits in poll() and runs ahead of the rest when they do,
+	 * instead of a frame late behind a busy core. Without the right to, it
+	 * runs as before. */
+	{
+		struct sched_param param = { .sched_priority = 10 };
+
+		if (sched_setscheduler(0, SCHED_FIFO, &param))
+			logline("no real-time priority: %s", strerror(errno));
+	}
 	/* Before any command: those that come while waiting for an input win. */
 	encoding = getenv("KVM_ENCODING");
 	if (packet_mode && encoding && !rc_set(encoding))
@@ -1267,6 +1370,11 @@ int main(int argc, char **argv)
 	if (venc_dev) {
 		rc.fps = fps ? fps : 30;
 		venc_open(venc_dev);
+		{
+			pthread_t th;
+
+			pthread_create(&th, NULL, writer, NULL);
+		}
 		/* Both codecs take the same raw format. */
 		raw = encoder_formats(venc.fd, codecs[want_codec].fourcc, &cfmt, &colour,
 				      codecs[want_codec].label);
@@ -1413,6 +1521,21 @@ int main(int argc, char **argv)
 			venc.request_busy = 0;
 		}
 
+		/* The frame held for the encoder: in once it is free, back to the
+		 * capture when the stream stopped. */
+		if (venc_pending_held && !(venc.on && venc.streaming)) {
+			release_cap(cap, venc_pending.index);
+			venc_pending_held = 0;
+		} else if (venc_pending_held && venc.busy < 0 && !venc.request_busy) {
+			venc_pending_held = 0;
+			if (venc_changed()) {
+				venc_stop();
+				venc_start();
+			}
+			venc_queue(&venc_pending, dmabuf[venc_pending.index]);
+			venc_frame_end = frame_end(&venc_pending);
+		}
+
 		if (pfd[5].revents & (POLLIN | POLLHUP)) {
 			venc_commands();
 			/* The capture streams on: the bridge changes over at once. */
@@ -1521,7 +1644,15 @@ int main(int argc, char **argv)
 				}
 				if (venc.on && venc.streaming && venc_due()) {
 					if (venc.busy >= 0 || venc.request_busy) {
-						st.skipped++;
+						/* Held until the encoder is free; one held
+						 * before is skipped. */
+						if (venc_pending_held) {
+							release_cap(cap, venc_pending.index);
+							st.skipped++;
+						}
+						venc_pending = buf;
+						venc_pending_held = 1;
+						refs++;
 					} else {
 						if (venc_changed()) {
 							venc_stop();

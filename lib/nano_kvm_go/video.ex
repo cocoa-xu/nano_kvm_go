@@ -180,8 +180,8 @@ defmodule NanoKVMGo.Video do
 
   @typedoc """
   What the stream did over the last `:seconds`: frames `:captured`,
-  `:encoded`, and `:skipped` because the encoder was still on the one
-  before; the time a frame took through the encoder, `:encode_ms` on
+  `:encoded`, and `:skipped`, held while the encoder was busy and then
+  passed by a newer one; the time a frame took through the encoder, `:encode_ms` on
   average and `:encode_max_ms` at most; from the end of a frame to the
   program having it, `:dequeue_ms` and `:dequeue_max_ms`, and to its coming
   out of the encoder, `:ready_ms` and `:ready_max_ms`; the `:bytes` sent; the QP, `:qp` on

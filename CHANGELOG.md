@@ -7,6 +7,12 @@
   frames captured, encoded and skipped while the encoder was still on the
   one before, the time a frame takes through the encoder, the bytes and
   the QP
+* The video program keeps up with 2560×1440 at 90 Hz: a frame that comes
+  while the encoder is busy waits for it instead of being dropped, encoded
+  frames go out on a thread of their own while the encoder takes the next,
+  the pipe to Elixir holds 1 MB and the program runs at real-time priority.
+  Every frame is encoded, about 9 ms from the end of a frame to its
+  encoding (`stats/1`'s `:ready_ms`), where a third were dropped before
 * `NanoKVMGo.Video.subscribe/2` takes `timestamps: true`: each access unit
   then comes with the time it came from the encoder, for a player that
   shows the frames at the pace they were made
